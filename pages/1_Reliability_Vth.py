@@ -171,7 +171,6 @@ def run_origin(
         return result
 
 
-st.set_page_config(page_title="TFT Reliability Origin 2020 v5", layout="wide")
 st.title("TFT 신뢰성 Vth + OriginPro 2020 자동 플롯 v5")
 st.caption(
     "NBTS/PBTS 동시 분석 · 파일 측정시간을 누적시간 "
