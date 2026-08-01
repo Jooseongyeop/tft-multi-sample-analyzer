@@ -185,86 +185,105 @@ def excel_bytes(df, step_summary, cycle_summary, metadata):
     return out.getvalue()
 
 
-def load_uploaded_model(slopes_file, history_file):
-    slopes = pd.read_csv(slopes_file) if slopes_file is not None else pd.DataFrame()
-    history = pd.read_csv(history_file) if history_file is not None else pd.DataFrame()
-    required = "robust_slope_torr_per_run"
-    if not slopes.empty and required not in slopes.columns:
-        raise ValueError(f"열화 속도 CSV에 '{required}' 열이 필요합니다.")
-    positive = (
-        pd.to_numeric(slopes[required], errors="coerce").dropna()
-        if not slopes.empty
-        else pd.Series(dtype=float)
-    )
-    positive = positive[positive > 0]
-    return slopes, history, positive
+def load_private_slopes():
+    try:
+        config = st.secrets["ald_prediction"]
+        values = pd.to_numeric(pd.Series(list(config["cycle_slopes"])), errors="coerce").dropna()
+        values = values[values > 0]
+        label = str(config.get("model_label", "비공개 오일-cycle 열화 속도"))
+        return values, label
+    except Exception:
+        return pd.Series(dtype=float), ""
 
 
 def predictor_tab():
     st.subheader("현재 CVG로 남은 O₃ 공정 횟수 추정")
-    st.info(
-        "공정 이력 보호를 위해 실제 학습 데이터는 웹사이트에 내장하지 않습니다. "
-        "본인의 열화 속도 CSV를 올리면 브라우저 세션 안에서만 계산합니다."
-    )
-    c1, c2 = st.columns(2)
-    slopes_file = c1.file_uploader(
-        "열화 속도 CSV",
-        type=["csv"],
-        key="ald_slopes_upload",
-        help="robust_slope_torr_per_run 열이 필요합니다.",
-    )
-    history_file = c2.file_uploader(
-        "오일-cycle 이력 CSV (선택)",
-        type=["csv"],
-        key="ald_history_upload",
-    )
-    if slopes_file is None:
-        st.caption("열화 속도 CSV를 업로드하면 잔여 공정 횟수 계산이 시작됩니다.")
-        return
-    try:
-        slopes, history, positive = load_uploaded_model(slopes_file, history_file)
-    except Exception as exc:
-        st.error(f"예측 데이터 읽기 실패: {exc}")
-        return
+    positive, model_label = load_private_slopes()
     if positive.empty:
-        st.error("0보다 큰 유효 열화 속도 데이터가 없습니다.")
+        st.warning(
+            "비공개 열화 속도 설정이 아직 등록되지 않았습니다. "
+            "Streamlit App Settings의 Secrets에 ald_prediction 값을 등록해 주세요."
+        )
+        with st.expander("관리자용 비공개 설정 형식"):
+            st.code(
+                '[ald_prediction]\ncycle_slopes = [0.00001, 0.00002, 0.00003]\nmodel_label = "Lab O3 oil cycles"',
+                language="toml",
+            )
         return
 
+    st.success(f"비공개 예측 모델을 불러왔습니다: {model_label} ({len(positive)} cycles)")
     c1, c2 = st.columns(2)
-    current = c1.number_input("현재 idle CVG [Torr]", min_value=0.0, value=0.0050, step=0.0001, format="%.5f")
-    threshold = c2.number_input("오일 교체 판단 CVG [Torr]", min_value=0.0, value=0.0095, step=0.0001, format="%.5f")
-    slow, typical, fast = positive.quantile(.25), positive.median(), positive.quantile(.75)
+    current = c1.number_input(
+        "현재 idle CVG [Torr]", min_value=0.0, value=0.0050,
+        step=0.0001, format="%.5f",
+    )
+    threshold = c2.number_input(
+        "오일 교체 판단 CVG [Torr]", min_value=0.0, value=0.0095,
+        step=0.0001, format="%.5f",
+    )
+    slow = float(positive.quantile(.25))
+    typical = float(positive.median())
+    fast = float(positive.quantile(.75))
 
     def remain(slope):
-        return max(0, math.floor((threshold-current)/slope)) if slope > 0 else 0
+        return max(0, math.floor((threshold - current) / slope)) if slope > 0 else 0
 
-    conservative, middle, optimistic = remain(fast), remain(typical), remain(slow)
+    conservative = remain(fast)
+    representative = remain(typical)
+    optimistic = remain(slow)
     a, b, c = st.columns(3)
-    a.metric("보수적 추정", f"{conservative} 회")
-    b.metric("대표 추정", f"{middle} 회")
-    c.metric("낙관적 추정", f"{optimistic} 회")
+    a.metric("보수적 추정", f"{conservative} 회", help="Q3의 빠른 열화 속도 적용")
+    b.metric("대표 추정", f"{representative} 회", help="열화 속도 중앙값 적용")
+    c.metric("낙관적 추정", f"{optimistic} 회", help="Q1의 느린 열화 속도 적용")
+
     if current >= threshold:
         st.error("현재 CVG가 교체 기준 이상입니다. 증착 전 오일 및 장비 상태 확인을 권장합니다.")
     elif conservative <= 1:
         st.warning("보수적 추정상 여유가 1회 이하입니다.")
     elif conservative <= 5:
-        st.warning("보수적 추정상 여유가 적습니다.")
+        st.warning("보수적 추정상 여유가 적습니다. 다음 공정부터 CVG를 집중 확인하세요.")
     else:
-        st.success("보수적 추정에서도 여러 회의 여유가 있습니다.")
-    st.caption(f"업로드 데이터 기반 열화 속도: {slow:.2E}~{fast:.2E} Torr/run (중앙 {typical:.2E})")
-    st.info("이 값은 의사결정 보조치이며 실제 장비 상태와 maintenance 기록을 함께 확인해야 합니다.")
+        st.success("보수적 추정에서도 여러 회의 공정 여유가 있습니다.")
 
-    needed = {"oil_cycle", "o3_runs_since_cycle_start", "pre_mfc_median_cvg_torr"}
-    if not history.empty and needed.issubset(history.columns):
-        h = history[(history.pre_mfc_median_cvg_torr >= .002) & (history.pre_mfc_median_cvg_torr <= .020)].copy()
+    left, right = st.columns([1.25, 1])
+    with left:
         fig = go.Figure()
-        for cyc, g in h.groupby("oil_cycle"):
-            fig.add_trace(go.Scatter(x=g.o3_runs_since_cycle_start, y=g.pre_mfc_median_cvg_torr, mode="lines+markers", name=f"Cycle {cyc}"))
-        fig.add_hline(y=threshold, line_dash="dash", line_color="#AA3377", annotation_text="Oil-change criterion")
-        fig.update_layout(height=430, xaxis_title="O3 runs since detected oil reset", yaxis_title="Idle CVG [Torr]", legend=dict(orientation="h"))
+        fig.add_trace(go.Box(
+            x=positive,
+            name="Oil-cycle slopes",
+            orientation="h",
+            boxpoints="all",
+            jitter=0.25,
+            pointpos=-1.6,
+            marker=dict(size=8, color="#2B6CB0"),
+            line=dict(color="#17365D"),
+        ))
+        fig.add_vline(x=slow, line_dash="dot", line_color="#2CA02C", annotation_text="Q1")
+        fig.add_vline(x=typical, line_dash="dash", line_color="#FF7F0E", annotation_text="Median")
+        fig.add_vline(x=fast, line_dash="dot", line_color="#D62728", annotation_text="Q3")
+        fig.update_layout(
+            title="오일 cycle별 CVG 열화 속도 Box Plot",
+            xaxis_title="CVG 상승 속도 [Torr/run]",
+            yaxis_title="",
+            height=390,
+            showlegend=False,
+            margin=dict(l=30, r=30, t=70, b=50),
+        )
         st.plotly_chart(fig, use_container_width=True)
-    elif history_file is not None:
-        st.warning("오일-cycle 이력 그래프에 필요한 열이 없어 그래프를 생략했습니다.")
+    with right:
+        basis = pd.DataFrame({
+            "기준": ["Q1 · 낙관적", "중앙값 · 대표", "Q3 · 보수적"],
+            "열화 속도 [Torr/run]": [slow, typical, fast],
+            "예상 잔여 횟수": [optimistic, representative, conservative],
+        })
+        st.markdown("#### 계산 기준")
+        st.dataframe(
+            basis.style.format({"열화 속도 [Torr/run]": "{:.3e}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.latex(r"N_{remain}=\left\lfloor\frac{P_{limit}-P_{current}}{slope}\right\rfloor")
+        st.caption("표본 수가 적으므로 장비 상태와 실제 maintenance 기록을 함께 확인해야 합니다.")
 
 def log_tab():
     st.subheader("ALD 공정 로그 자동 정리 및 Step Plot")

@@ -20,7 +20,9 @@ TFT 측정 데이터와 ALD 공정 로그를 브라우저에서 분석하는 Str
 
 ### 3. ALD Process Log
 
-- 현재 idle CVG 기반 O₃ 공정 잔여 횟수 추정
+- Streamlit 비공개 설정의 오일 cycle별 열화 속도를 사용
+- 현재 idle CVG 입력만으로 보수적·대표·낙관적 잔여 횟수 추정
+- Q1·중앙값·Q3와 cycle별 열화 속도 Box Plot 표시
 - 여러 ALD TXT/LOG 파일의 실제 BTorr 자동 추출
 - Main step와 cycle 요약, 인터랙티브 Plot 및 Excel 생성
 
@@ -35,6 +37,18 @@ python -m pip install -r requirements.txt
 python -m streamlit run streamlit_app.py
 ```
 
+
+## ALD 비공개 예측 설정
+
+Streamlit Community Cloud의 App settings → Secrets에 다음 형식으로 오일 cycle별 열화 속도를 등록합니다.
+
+```toml
+[ald_prediction]
+cycle_slopes = [0.00001, 0.00002, 0.00003]
+model_label = "Lab O3 oil-cycle model"
+```
+
+실제 값은 GitHub 코드나 README에 넣지 마세요. 로컬 실행 시에는 `.streamlit/secrets.toml.example`을 참고해 `.streamlit/secrets.toml`을 만들 수 있으며, 실제 secrets 파일은 Git에서 제외됩니다.
 ## 참고
 
 웹 서버에서는 Windows용 OriginPro를 직접 실행할 수 없습니다. Origin 자동화는 템플릿을 보유한 Windows PC의 로컬 버전에서 사용해야 합니다.
