@@ -1,23 +1,34 @@
-# TFT Multi-Sample Analyzer
+# TFT Analyzer Suite
 
-TFT transfer-curve raw data를 여러 개 업로드하여 Mobility, Vth, SS를 계산하고 Origin용 Excel을 생성하는 Streamlit 웹앱입니다.
+TFT 측정 데이터와 ALD 공정 로그를 브라우저에서 분석하는 Streamlit 웹앱입니다.
 
-## 주요 기능
+## 페이지
 
-- 4F 표 형식 및 6F B1500 `DataName`/`DataValue` 형식 선택
-- 여러 파일 동시 업로드 및 파일명을 샘플명으로 사용
-- Vd=0.1 V 데이터로 Mobility 계산
-- 기본 Vth 기준: `|Id| = 1.2e-7 A` (변경 가능)
-- 지정 전류 범위의 오른쪽 turn-on branch 전체로 SS fitting
-- Transfer Curve에서 `|Id|`, `|Ig|`, SS fitting 영역 미리보기
-- 샘플별 Summary 및 Processed Data
-- Origin용 `IV`, `IG`, `Mobility(FEM)` Excel 시트 생성
+### 1. TFT Multi-Sample Analyzer
 
-## Streamlit Community Cloud 배포
+- 4F 표준 형식과 6F B1500 raw 형식 지원
+- 여러 시료의 Mobility, Vth, SS 동시 계산
+- Transfer Curve에서 Id, Ig 및 SS fitting 구간 확인
+- Origin용 IV, IG, Mobility(FEM) Excel 생성
 
-- Repository: 이 GitHub 저장소
-- Branch: `main`
-- Main file path: `streamlit_app.py`
+### 2. Reliability Vth
+
+- NBTS/PBTS 파일 동시 분석
+- 기본 `|Id| = 1.2×10⁻⁷ A` 기준 Vth 계산
+- 시간별 ΔVth, Transfer Curve 및 결과 Excel 생성
+- OriginPro 2020 자동 플롯은 Windows 로컬 전용이며 공개 저장소에는 템플릿을 포함하지 않음
+
+### 3. ALD Process Log
+
+- Streamlit 비공개 설정의 오일 cycle별 열화 속도를 사용
+- 현재 idle CVG 입력만으로 보수적·대표·낙관적 잔여 횟수 추정
+- Q1·중앙값·Q3와 cycle별 열화 속도 Box Plot 표시
+- 여러 ALD TXT/LOG 파일의 실제 BTorr 자동 추출
+- Main step와 cycle 요약, 인터랙티브 Plot 및 Excel 생성
+
+## 웹 실행
+
+https://tft-multi-sample-analyzer.streamlit.app/
 
 ## 로컬 실행
 
@@ -26,16 +37,20 @@ python -m pip install -r requirements.txt
 python -m streamlit run streamlit_app.py
 ```
 
-## 데이터 보안
 
-업로드한 파일은 앱 메모리에서 분석되며 GitHub 저장소에 자동 저장되지 않습니다. 회사·연구실 기밀 데이터 또는 개인정보가 포함된 파일을 공개 웹서비스에 올리기 전에는 내부 보안 정책을 확인하세요.
+## ALD 비공개 예측 설정
 
-## 입력 형식
+Streamlit Community Cloud의 App settings → Secrets에 다음 형식으로 오일 cycle별 열화 속도를 등록합니다.
 
-### 4F standard table
+```toml
+[ald_prediction]
+cycle_slopes = [0.00001, 0.00002, 0.00003]
+model_label = "Lab O3 oil-cycle model"
+```
 
-`gateVoltage[V]`, `gateCurrent[A]`, `drainVoltage[V]`, `drainCurrent[A]` 열을 우선 인식합니다.
+실제 값은 GitHub 코드나 README에 넣지 마세요. 로컬 실행 시에는 `.streamlit/secrets.toml.example`을 참고해 `.streamlit/secrets.toml`을 만들 수 있으며, 실제 secrets 파일은 Git에서 제외됩니다.
+## 참고
 
-### 6F B1500 raw
+웹 서버에서는 Windows용 OriginPro를 직접 실행할 수 없습니다. Origin 자동화는 템플릿을 보유한 Windows PC의 로컬 버전에서 사용해야 합니다.
 
-`DataName` 아래의 `DataValue` 행을 읽습니다. Vd 열이 없으면 Vg reset을 기준으로 sweep을 나누고 첫 구간을 0.1 V, 두 번째 구간을 1 V로 취급합니다. 실제 측정 순서가 다르면 결과의 오류 목록과 Origin 미리보기를 확인하세요.
+업로드 파일은 분석 중 메모리에서 처리되며 GitHub 저장소에 자동으로 저장되지 않습니다. 공개 웹서비스에 회사·연구 보안 데이터 업로드 전에는 소속 기관의 보안 정책을 확인하세요.
