@@ -1,22 +1,12 @@
 import streamlit as st
 
-import analyzer_engine as analyzer
+st.set_page_config(page_title="TFT Analyzer Suite", page_icon="📈", layout="wide")
 
-st.set_page_config(page_title="TFT Multi-Sample Analyzer", page_icon="📈", layout="wide")
-
-probe_mode = st.sidebar.radio(
-    "Probe data format",
-    ["4F standard table", "6F B1500 raw"],
-    help="4F prioritizes table columns; 6F prioritizes B1500 DataName/DataValue rows.",
+navigation = st.navigation(
+    [
+        st.Page("pages/TFT_IV_Curve.py", title="TFT IV Curve", default=True),
+        st.Page("pages/1_Reliability_Vth.py", title="Reliability Vth"),
+        st.Page("pages/2_ALD_Process_Log.py", title="ALD Process Log"),
+    ]
 )
-
-if probe_mode == "6F B1500 raw":
-    analyzer.APP_VARIANT = "6F"
-    analyzer.APP_TITLE = "TFT Multi-Sample Analyzer - 6F B1500"
-    analyzer.PREFER_B1500 = True
-else:
-    analyzer.APP_VARIANT = "4F"
-    analyzer.APP_TITLE = "TFT Multi-Sample Analyzer - 4F Standard"
-    analyzer.PREFER_B1500 = False
-
-analyzer.main(configure_page=False)
+navigation.run()

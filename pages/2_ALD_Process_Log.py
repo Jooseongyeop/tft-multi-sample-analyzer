@@ -326,7 +326,6 @@ def log_tab():
 
 
 def main():
-    st.set_page_config(page_title="ALD Vacuum & Process Log Tool",layout="wide")
     st.title("ALD Vacuum Life & Process Log Analyzer")
     st.caption("O₃ 공정 잔여 횟수 예측 · BTorr 공정 로그 자동 step/cycle 정리")
     tab1,tab2=st.tabs(["남은 공정 횟수 예측","공정 로그 자동 Plot"])
