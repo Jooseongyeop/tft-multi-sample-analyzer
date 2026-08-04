@@ -7,6 +7,9 @@ TFT 측정 데이터와 ALD 공정 로그를 브라우저에서 분석하는 Str
 ### 1. TFT Multi-Sample Analyzer
 
 - 4F 표준 형식과 6F B1500 raw 형식 지원
+- B1500 `DataName/DataValue` 및 metadata 뒤 `VG,ID,IG,gm` Classic CSV 자동 인식
+- 파일별 실제 VG 최소·최대 범위와 sweep reset 자동 감지 (`-2~2 V`, `-12~12 V` 등)
+- 서로 다른 VG 범위의 샘플도 Origin용 Excel에서 VG 기준 outer merge
 - 여러 시료의 Mobility, Vth, SS 동시 계산
 - Transfer Curve에서 Id, Ig 및 SS fitting 구간 확인
 - Origin용 IV, IG, Mobility(FEM) Excel 생성
