@@ -53,9 +53,7 @@ def decode_text(raw):
     raise ValueError("Unable to detect text encoding.")
 
 
-def parse_b1500(raw):
-    text, encoding = decode_text(raw)
-    rows = list(csv.reader(io.StringIO(text)))
+def parse_b1500_dataname(rows):
     header = None
     records = []
     for row in rows:
@@ -70,8 +68,50 @@ def parse_b1500(raw):
             records.append(values)
     if not header or not records:
         raise ValueError("B1500 DataName/DataValue measurement rows were not found.")
-    return pd.DataFrame(records, columns=header), f"B1500 ({encoding})"
+    return pd.DataFrame(records, columns=header)
 
+
+def parse_b1500_classic(rows):
+    """Parse B1500 Classic CSVs with metadata followed by a VG/ID table."""
+    vg_aliases = {"vg", "vgs", "gatevoltage", "gatevoltagev"}
+    id_aliases = {"id", "ids", "draincurrent", "draincurrenta"}
+    for line_number, row in enumerate(rows, start=1):
+        header = [cell.strip() for cell in row]
+        norms = [normalized(cell) for cell in header]
+        vg_positions = [i for i, value in enumerate(norms) if value in vg_aliases]
+        id_positions = [i for i, value in enumerate(norms) if value in id_aliases]
+        if not vg_positions or not id_positions:
+            continue
+
+        vg_index, id_index = vg_positions[0], id_positions[0]
+        records = []
+        for data_row in rows[line_number:]:
+            if len(data_row) < len(header):
+                continue
+            values = [cell.strip() for cell in data_row[:len(header)]]
+            try:
+                float(values[vg_index])
+                float(values[id_index])
+            except (TypeError, ValueError):
+                continue
+            records.append(values)
+        if records:
+            return pd.DataFrame(records, columns=header), line_number
+    raise ValueError("B1500 VG/ID measurement table was not found.")
+
+
+def parse_b1500(raw):
+    text, encoding = decode_text(raw)
+    rows = list(csv.reader(io.StringIO(text)))
+    try:
+        frame = parse_b1500_dataname(rows)
+        return frame, f"B1500 DataName/DataValue ({encoding})"
+    except ValueError as dataname_error:
+        try:
+            frame, line_number = parse_b1500_classic(rows)
+            return frame, f"B1500 Classic table ({encoding}, header line {line_number})"
+        except ValueError as classic_error:
+            raise ValueError(f"{dataname_error} {classic_error}") from classic_error
 
 def parse_standard(raw, filename):
     if filename.lower().endswith((".xlsx", ".xls")):
@@ -150,7 +190,7 @@ def split_vg_segments(frame):
     vg = frame["Vg"].to_numpy(float)
     finite_steps = np.abs(np.diff(vg))
     typical = np.nanmedian(finite_steps[finite_steps > 0]) if np.any(finite_steps > 0) else 0.02
-    jumps = np.where(np.diff(vg) < -max(0.5, typical * 3))[0] + 1
+    jumps = np.where(np.diff(vg) < -max(0.5, typical * 1.5))[0] + 1
     cuts = [0, *jumps.tolist(), len(frame)]
     return [frame.iloc[cuts[i]:cuts[i + 1]].reset_index(drop=True) for i in range(len(cuts) - 1) if cuts[i + 1] - cuts[i] >= 3]
 
@@ -234,6 +274,9 @@ def analyze_curve(curve, settings, vds=0.1):
     )
     positive_mobility = mobility[np.isfinite(mobility) & (mobility > 0)]
     metrics = {
+        "Vg min [V]": float(np.nanmin(vg)),
+        "Vg max [V]": float(np.nanmax(vg)),
+        "Vg points": int(len(vg)),
         "Mobility max [cm2/Vs]": float(np.max(positive_mobility)) if len(positive_mobility) else np.nan,
         "Vth [V]": interpolate_vth(vg, abs_id, settings.vth_current),
         "Vth criterion |Id| [A]": settings.vth_current,
