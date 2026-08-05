@@ -60,5 +60,6 @@ model_label = "Lab O3 oil-cycle model"
 ## Recent updates
 
 - PPT copy table shows FEM, Vth, and SS with 5 significant figures.
+- Excel exports include a PPT_Copy sheet with five-significant-figure values and 12 pt Arial font.
 - Gate current is converted to absolute value before preview, plotting, and Excel export.
 - Reliability analysis accepts either 0 s or 1 s as the first measurement.
