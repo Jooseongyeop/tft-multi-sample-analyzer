@@ -1,6 +1,8 @@
 import unittest
+from io import BytesIO
 
 import pandas as pd
+from openpyxl import load_workbook
 
 import analyzer_engine as analyzer
 
@@ -68,6 +70,33 @@ class ParserTests(unittest.TestCase):
             "Vth [V]": "1.6490",
             "SS [mV/dec]": "76.469",
         })
+
+    def test_copy_safe_summary_has_five_significant_figure_strings(self):
+        summary = pd.DataFrame([{
+            "Sample": "sample_A",
+            "Mobility max [cm2/Vs]": 30.74404422,
+            "Vth [V]": 0.1642206289,
+            "SS [mV/dec]": 44.96501831,
+        }])
+        copied = analyzer.copy_safe_summary_table(summary)
+        self.assertEqual(copied.loc[0, "Mobility max [cm2/Vs]"], "30.744")
+        self.assertEqual(copied.loc[0, "Vth [V]"], "0.16422")
+        self.assertEqual(copied.loc[0, "SS [mV/dec]"], "44.965")
+
+    def test_ppt_copy_excel_sheet_uses_12_point_font(self):
+        summary = pd.DataFrame([{
+            "Sample": "sample_A",
+            "Mobility max [cm2/Vs]": 30.74404422,
+            "Vth [V]": 0.1642206289,
+            "SS [mV/dec]": 44.96501831,
+        }])
+        content = analyzer.workbook_bytes(summary, [], [], [], [], [])
+        workbook = load_workbook(BytesIO(content))
+        sheet = workbook["PPT_Copy"]
+        self.assertEqual(sheet["B2"].value, "30.744")
+        self.assertEqual(sheet["C2"].value, "0.16422")
+        self.assertEqual(sheet["D2"].value, "44.965")
+        self.assertEqual(sheet["B2"].font.sz, 12)
 
 if __name__ == "__main__":
     unittest.main()

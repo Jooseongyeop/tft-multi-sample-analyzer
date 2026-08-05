@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Font
 
 
 APP_VARIANT = "4F"
@@ -209,6 +210,19 @@ def ppt_summary_table(summary):
     return result
 
 
+def copy_safe_summary_table(summary):
+    """Format PPT metrics as strings so clipboard data also has five figures."""
+    result = summary.copy()
+    for column in (
+        "Mobility max [cm2/Vs]",
+        "Vth [V]",
+        "SS [mV/dec]",
+    ):
+        if column in result:
+            result[column] = result[column].map(format_significant)
+    return result
+
+
 def split_vg_segments(frame):
     if len(frame) < 3:
         return [frame.copy()]
@@ -334,6 +348,11 @@ def workbook_bytes(summary, processed, iv_items, ig_items, mobility_items, error
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name="Summary", index=False)
+        ppt_summary_table(summary).to_excel(writer, sheet_name="PPT_Copy", index=False)
+        ppt_sheet = writer.book["PPT_Copy"]
+        for row_index, row in enumerate(ppt_sheet.iter_rows(), start=1):
+            for cell in row:
+                cell.font = Font(name="Arial", size=12, bold=row_index == 1)
         for index, (name, frame) in enumerate(processed, start=1):
             frame.to_excel(writer, sheet_name=safe_sheet_name(index, name), index=False)
         merge_origin_columns(iv_items, "Id").to_excel(writer, sheet_name="IV", index=False)
@@ -435,10 +454,19 @@ def main(configure_page=True):
     summary = pd.DataFrame(summary_rows)
     st.subheader("All-sample summary")
     if len(summary):
-        st.dataframe(summary, hide_index=True, use_container_width=True)
-        st.caption("PPT copy table (FEM, Vth, and SS: 5 significant figures)")
         st.dataframe(
-            ppt_summary_table(summary), hide_index=True, use_container_width=True
+            copy_safe_summary_table(summary),
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.caption(
+            "Copy the table below for PPT (5 significant figures, 12 pt display). "
+            "The downloaded Excel also includes a 12 pt PPT_Copy sheet."
+        )
+        st.dataframe(
+            ppt_summary_table(summary).style.set_properties(**{"font-size": "12pt"}),
+            hide_index=True,
+            use_container_width=True,
         )
     else:
         st.error("No files were analyzed successfully.")
