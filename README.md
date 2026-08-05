@@ -57,3 +57,8 @@ model_label = "Lab O3 oil-cycle model"
 웹 서버에서는 Windows용 OriginPro를 직접 실행할 수 없습니다. Origin 자동화는 템플릿을 보유한 Windows PC의 로컬 버전에서 사용해야 합니다.
 
 업로드 파일은 분석 중 메모리에서 처리되며 GitHub 저장소에 자동으로 저장되지 않습니다. 공개 웹서비스에 회사·연구 보안 데이터 업로드 전에는 소속 기관의 보안 정책을 확인하세요.
+## Recent updates
+
+- PPT copy table shows FEM, Vth, and SS with 5 significant figures.
+- Gate current is converted to absolute value before preview, plotting, and Excel export.
+- Reliability analysis accepts either 0 s or 1 s as the first measurement.

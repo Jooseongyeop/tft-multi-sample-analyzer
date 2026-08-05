@@ -20,9 +20,12 @@ TEMPLATE_PATH = BASE_DIR / "top_gate_reliability_template.opju"
 WORKER_PATH = BASE_DIR / "origin2020_worker_v5.py"
 
 # File names contain interval/measurement times. Origin displays accumulated times.
-FILE_TIMES = [0.0, 100.0, 400.0, 500.0, 800.0, 1800.0]
+INITIAL_FILE_TIMES = (0.0, 1.0)
+FOLLOWUP_FILE_TIMES = [100.0, 400.0, 500.0, 800.0, 1800.0]
+FILE_TIMES = [*INITIAL_FILE_TIMES, *FOLLOWUP_FILE_TIMES]
 PLOT_TIME = {
     0.0: 1.0,
+    1.0: 1.0,
     100.0: 100.0,
     400.0: 500.0,
     500.0: 1000.0,
@@ -58,6 +61,14 @@ def identify_file(filename: str) -> tuple[str, float]:
     if not matches:
         raise ValueError(f"지원하지 않는 측정 시간입니다: {measured:g} s")
     return type_match.group(1).upper(), matches[0]
+
+
+def ordered_file_times(curves: dict[float, pd.DataFrame]) -> list[float]:
+    """Use either a 0 s or 1 s file as the first reliability measurement."""
+    initial = next((time for time in INITIAL_FILE_TIMES if time in curves), None)
+    if initial is None:
+        raise ValueError("The first reliability file must be labeled 0 s or 1 s.")
+    return [initial, *FOLLOWUP_FILE_TIMES]
 
 
 def pick_column(columns: Iterable[str], keywords: tuple[str, ...]) -> str | None:
@@ -99,7 +110,7 @@ def constant_current_vth(vg, current, target: float) -> float:
 
 def build_wide(curves: dict[float, pd.DataFrame]) -> pd.DataFrame:
     wide = None
-    for file_time in FILE_TIMES:
+    for file_time in ordered_file_times(curves):
         accumulated = int(PLOT_TIME[file_time])
         part = curves[file_time][["Vg", "Id"]].copy()
         part = part.apply(pd.to_numeric, errors="coerce").dropna(subset=["Vg"])
@@ -231,11 +242,16 @@ complete_conditions = []
 for condition in ("NBTS", "PBTS"):
     if not curves[condition]:
         continue
-    missing = [t for t in FILE_TIMES if t not in curves[condition]]
+    missing = [t for t in FOLLOWUP_FILE_TIMES if t not in curves[condition]]
+    if not any(t in curves[condition] for t in INITIAL_FILE_TIMES):
+        missing.insert(0, "0 s or 1")
     if missing:
         st.warning(
             f"{condition} 누락 파일 시간: "
-            + ", ".join(f"{time:g} s" for time in missing)
+            + ", ".join(
+                f"{time:g} s" if isinstance(time, (int, float)) else f"{time} s"
+                for time in missing
+            )
         )
     else:
         complete_conditions.append(condition)
@@ -272,7 +288,7 @@ for tab, condition in zip(tabs, complete_conditions):
         result = next(df for df in all_results if df.iloc[0]["Condition"] == condition)
         with left:
             fig, ax = plt.subplots(figsize=(7, 5))
-            for file_time in FILE_TIMES:
+            for file_time in ordered_file_times(curves[condition]):
                 data = curves[condition][file_time].dropna().sort_values("Vg")
                 ax.plot(
                     data["Vg"],
