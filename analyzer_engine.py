@@ -13,6 +13,7 @@ import streamlit as st
 APP_VARIANT = "4F"
 APP_TITLE = "TFT Multi-Sample Analyzer - 4F Probe"
 PREFER_B1500 = False
+PRESENTATION_SIGNIFICANT_DIGITS = 5
 
 
 @dataclass
@@ -179,9 +180,33 @@ def numeric_frame(frame):
     vd_col = find_column(frame.columns, "vd", required=False)
     result["Vg"] = pd.to_numeric(frame[vg_col], errors="coerce")
     result["Id"] = pd.to_numeric(frame[id_col], errors="coerce")
-    result["Ig"] = pd.to_numeric(frame[ig_col], errors="coerce") if ig_col else np.nan
+    result["Ig"] = (
+        pd.to_numeric(frame[ig_col], errors="coerce").abs() if ig_col else np.nan
+    )
     result["Vd"] = pd.to_numeric(frame[vd_col], errors="coerce") if vd_col else np.nan
     return result.replace([np.inf, -np.inf], np.nan).dropna(subset=["Vg", "Id"]).reset_index(drop=True)
+
+
+def format_significant(value, digits=PRESENTATION_SIGNIFICANT_DIGITS):
+    """Format a calculated value for copy/paste while preserving significant zeros."""
+    if value is None or pd.isna(value):
+        return ""
+    return f"{float(value):#.{digits}g}"
+
+
+def ppt_summary_table(summary):
+    """Return FEM, Vth, and SS as five-significant-figure strings for PPT."""
+    columns = {
+        "Mobility max [cm2/Vs]": "FEM [cm2/Vs]",
+        "Vth [V]": "Vth [V]",
+        "SS [mV/dec]": "SS [mV/dec]",
+    }
+    if summary.empty:
+        return pd.DataFrame(columns=["Sample", *columns.values()])
+    result = summary[["Sample", *columns]].rename(columns=columns).copy()
+    for column in columns.values():
+        result[column] = result[column].map(format_significant)
+    return result
 
 
 def split_vg_segments(frame):
@@ -411,6 +436,10 @@ def main(configure_page=True):
     st.subheader("All-sample summary")
     if len(summary):
         st.dataframe(summary, hide_index=True, use_container_width=True)
+        st.caption("PPT copy table (FEM, Vth, and SS: 5 significant figures)")
+        st.dataframe(
+            ppt_summary_table(summary), hide_index=True, use_container_width=True
+        )
     else:
         st.error("No files were analyzed successfully.")
 

@@ -45,6 +45,29 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(merged.Vg.tolist(), [-12.0, -2.0, 0.0, 2.0, 12.0])
         self.assertTrue(pd.isna(merged.loc[merged.Vg == -12.0, "narrow"]).all())
 
+    def test_gate_current_is_converted_to_absolute_value(self):
+        frame = pd.DataFrame({
+            "VG": [-1, 0, 1],
+            "ID": [1e-12, 1e-9, 1e-6],
+            "IG": [-1e-13, 2e-13, -3e-13],
+        })
+        numeric = analyzer.numeric_frame(frame)
+        self.assertEqual(numeric.Ig.tolist(), [1e-13, 2e-13, 3e-13])
+
+    def test_ppt_summary_uses_five_significant_figures(self):
+        summary = pd.DataFrame([{
+            "Sample": "sample_A",
+            "Mobility max [cm2/Vs]": 10.24703435,
+            "Vth [V]": 1.6490481,
+            "SS [mV/dec]": 76.469075,
+        }])
+        table = analyzer.ppt_summary_table(summary)
+        self.assertEqual(table.iloc[0].to_dict(), {
+            "Sample": "sample_A",
+            "FEM [cm2/Vs]": "10.247",
+            "Vth [V]": "1.6490",
+            "SS [mV/dec]": "76.469",
+        })
 
 if __name__ == "__main__":
     unittest.main()
