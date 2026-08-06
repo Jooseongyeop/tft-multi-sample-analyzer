@@ -66,3 +66,6 @@ model_label = "Lab O3 oil-cycle model"
 
 - Uploaded raw-data files can be cleared together with one button.
 - The TFT preview shows transfer and Vd=0.1 V mobility curves side by side.
+
+- Reliability uploads can also be cleared together with one button.
+- Transfer-curve legends show one solid-line entry per sample below the plots.

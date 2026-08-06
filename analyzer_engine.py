@@ -369,13 +369,13 @@ def plot_all(samples):
     figure, (axis, mobility_axis) = plt.subplots(1, 2, figsize=(14, 5.5))
     for name, frame in samples:
         line = axis.semilogy(
-            frame["Vg"], frame["abs_Id"], linewidth=1.6, label=f"{name} |Id|"
+            frame["Vg"], frame["abs_Id"], linewidth=1.6, label=name
         )[0]
         color = line.get_color()
         if "Ig" in frame.columns and frame["Ig"].notna().any():
             axis.semilogy(
                 frame["Vg"], np.abs(frame["Ig"]), linestyle="--", linewidth=1.0,
-                color=color, alpha=0.75, label=f"{name} |Ig|"
+                color=color, alpha=0.75, label="_nolegend_"
             )
         if "SS_fit_used" in frame.columns:
             ss_points = frame[frame["SS_fit_used"]]
@@ -383,23 +383,27 @@ def plot_all(samples):
                 axis.semilogy(
                     ss_points["Vg"], ss_points["abs_Id"], linestyle="", marker="s",
                     markersize=5, markerfacecolor="none", markeredgecolor=color,
-                    label=f"{name} SS region"
+                    label="_nolegend_"
                 )
         if "Mobility_cm2_Vs" in frame.columns:
             mobility_axis.plot(
                 frame["Vg"], frame["Mobility_cm2_Vs"],
-                linewidth=1.6, color=color, label=name,
+                linewidth=1.6, color=color, label="_nolegend_",
             )
     axis.set_xlabel("Vg [V]")
     axis.set_ylabel("|Current| [A]")
     axis.grid(True, which="both", alpha=0.25)
-    axis.legend(fontsize=8, ncol=2)
     mobility_axis.axhline(0, color="gray", linewidth=0.8, alpha=0.6)
     mobility_axis.set_xlabel("Vg [V]")
     mobility_axis.set_ylabel("Mobility [cm2/Vs]")
     mobility_axis.grid(True, alpha=0.25)
-    mobility_axis.legend(fontsize=8)
-    figure.tight_layout()
+    handles, labels = axis.get_legend_handles_labels()
+    figure.legend(
+        handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.01),
+        ncol=1, fontsize=7, frameon=False,
+    )
+    legend_space = min(0.45, 0.08 + 0.035 * len(labels))
+    figure.tight_layout(rect=[0, legend_space, 1, 1])
     return figure
 def main(configure_page=True):
     if configure_page:

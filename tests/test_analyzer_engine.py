@@ -110,6 +110,11 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(len(figure.axes), 2)
         self.assertEqual(figure.axes[0].get_ylabel(), "|Current| [A]")
         self.assertEqual(figure.axes[1].get_ylabel(), "Mobility [cm2/Vs]")
+        self.assertEqual(len(figure.legends), 1)
+        self.assertEqual(
+            [text.get_text() for text in figure.legends[0].get_texts()],
+            ["sample_A"],
+        )
 
 if __name__ == "__main__":
     unittest.main()
