@@ -203,10 +203,26 @@ with st.sidebar:
         "0→1, 100→100, 400→500, 500→1000, 800→1800, 1800→3600 s"
     )
 
-files = st.file_uploader(
-    "NBTS/PBTS 파일을 함께 업로드하세요(조건별 6개, 최대 12개)",
-    accept_multiple_files=True,
-)
+if "reliability_upload_version" not in st.session_state:
+    st.session_state.reliability_upload_version = 0
+upload_column, clear_column = st.columns([5, 1])
+with upload_column:
+    files = st.file_uploader(
+        "NBTS/PBTS reliability files (6 per condition, up to 12 files)",
+        accept_multiple_files=True,
+        key=f"reliability_upload_{st.session_state.reliability_upload_version}",
+    )
+with clear_column:
+    st.write("")
+    st.write("")
+    if st.button(
+        "Clear all files",
+        key="clear_reliability_files",
+        disabled=not bool(files),
+        use_container_width=True,
+    ):
+        st.session_state.reliability_upload_version += 1
+        st.rerun()
 if not files:
     st.info("파일명에 NBTS 또는 PBTS와 0.00s 같은 측정 시간이 필요합니다.")
     st.stop()
