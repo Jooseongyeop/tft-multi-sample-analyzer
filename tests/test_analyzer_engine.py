@@ -98,5 +98,18 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(sheet["D2"].value, "44.965")
         self.assertEqual(sheet["B2"].font.sz, 12)
 
+    def test_preview_plot_contains_transfer_and_mobility_panels(self):
+        frame = pd.DataFrame({
+            "Vg": [-1.0, 0.0, 1.0],
+            "abs_Id": [1e-12, 1e-9, 1e-6],
+            "Ig": [1e-13, 2e-13, 3e-13],
+            "Mobility_cm2_Vs": [0.1, 1.0, 5.0],
+            "SS_fit_used": [False, True, True],
+        })
+        figure = analyzer.plot_all([("sample_A", frame)])
+        self.assertEqual(len(figure.axes), 2)
+        self.assertEqual(figure.axes[0].get_ylabel(), "|Current| [A]")
+        self.assertEqual(figure.axes[1].get_ylabel(), "Mobility [cm2/Vs]")
+
 if __name__ == "__main__":
     unittest.main()

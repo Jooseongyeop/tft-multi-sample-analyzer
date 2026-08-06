@@ -366,7 +366,7 @@ def workbook_bytes(summary, processed, iv_items, ig_items, mobility_items, error
 
 
 def plot_all(samples):
-    figure, axis = plt.subplots(figsize=(9, 5.5))
+    figure, (axis, mobility_axis) = plt.subplots(1, 2, figsize=(14, 5.5))
     for name, frame in samples:
         line = axis.semilogy(
             frame["Vg"], frame["abs_Id"], linewidth=1.6, label=f"{name} |Id|"
@@ -385,12 +385,22 @@ def plot_all(samples):
                     markersize=5, markerfacecolor="none", markeredgecolor=color,
                     label=f"{name} SS region"
                 )
+        if "Mobility_cm2_Vs" in frame.columns:
+            mobility_axis.plot(
+                frame["Vg"], frame["Mobility_cm2_Vs"],
+                linewidth=1.6, color=color, label=name,
+            )
     axis.set_xlabel("Vg [V]")
     axis.set_ylabel("|Current| [A]")
     axis.grid(True, which="both", alpha=0.25)
     axis.legend(fontsize=8, ncol=2)
+    mobility_axis.axhline(0, color="gray", linewidth=0.8, alpha=0.6)
+    mobility_axis.set_xlabel("Vg [V]")
+    mobility_axis.set_ylabel("Mobility [cm2/Vs]")
+    mobility_axis.grid(True, alpha=0.25)
+    mobility_axis.legend(fontsize=8)
+    figure.tight_layout()
     return figure
-
 def main(configure_page=True):
     if configure_page:
         st.set_page_config(page_title=APP_TITLE, layout="wide")
@@ -408,11 +418,24 @@ def main(configure_page=True):
         ss_max = st.number_input("SS maximum |Id| [A] (exclusive)", min_value=1e-30, value=1e-9, format="%.3e")
         vd_tolerance = st.number_input("Vd detection tolerance [V]", min_value=1e-6, value=0.02, format="%.3g")
 
-    uploaded = st.file_uploader(
-        "Upload multiple CSV or Excel raw-data files",
-        type=["csv", "txt", "xlsx", "xls"],
-        accept_multiple_files=True,
-    )
+    if "tft_upload_version" not in st.session_state:
+        st.session_state.tft_upload_version = 0
+    upload_column, clear_column = st.columns([5, 1])
+    with upload_column:
+        uploaded = st.file_uploader(
+            "Upload multiple CSV or Excel raw-data files",
+            type=["csv", "txt", "xlsx", "xls"],
+            accept_multiple_files=True,
+            key=f"tft_raw_upload_{st.session_state.tft_upload_version}",
+        )
+    with clear_column:
+        st.write("")
+        st.write("")
+        if st.button(
+            "Clear all files", disabled=not bool(uploaded), use_container_width=True
+        ):
+            st.session_state.tft_upload_version += 1
+            st.rerun()
     if not uploaded:
         st.info("Select files to begin analysis.")
         return

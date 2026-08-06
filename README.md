@@ -63,3 +63,6 @@ model_label = "Lab O3 oil-cycle model"
 - Excel exports include a PPT_Copy sheet with five-significant-figure values and 12 pt Arial font.
 - Gate current is converted to absolute value before preview, plotting, and Excel export.
 - Reliability analysis accepts either 0 s or 1 s as the first measurement.
+
+- Uploaded raw-data files can be cleared together with one button.
+- The TFT preview shows transfer and Vd=0.1 V mobility curves side by side.
