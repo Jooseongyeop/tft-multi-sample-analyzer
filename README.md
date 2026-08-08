@@ -24,7 +24,8 @@ TFT 측정 데이터와 ALD 공정 로그를 브라우저에서 분석하는 Str
 ### 3. ALD Process Log
 
 - Streamlit 비공개 설정의 오일 cycle별 열화 속도를 사용
-- 현재 idle CVG 입력만으로 보수적·대표·낙관적 잔여 횟수 추정
+- 현재 idle CVG 입력으로 Q3 열화 속도를 적용한 보수적 잔여 횟수만 표시
+- 현재값·교체 기준·CVG 여유·Q3 열화 속도와 실제 대입 계산식 표시
 - Q1·중앙값·Q3와 cycle별 열화 속도 Box Plot 표시
 - 여러 ALD TXT/LOG 파일의 실제 BTorr 자동 추출
 - Main step와 cycle 요약, 인터랙티브 Plot 및 Excel 생성
