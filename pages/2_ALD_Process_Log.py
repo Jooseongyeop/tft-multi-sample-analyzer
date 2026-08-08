@@ -196,6 +196,23 @@ def load_private_slopes():
         return pd.Series(dtype=float), ""
 
 
+def calculate_conservative_prediction(current, threshold, slopes):
+    values = pd.to_numeric(pd.Series(list(slopes)), errors="coerce").dropna()
+    values = values[values > 0]
+    if values.empty:
+        raise ValueError("양수인 열화 속도 데이터가 필요합니다.")
+    q1 = float(values.quantile(.25))
+    median = float(values.median())
+    q3 = float(values.quantile(.75))
+    margin = max(0.0, float(threshold) - float(current))
+    remaining = max(0, math.floor(margin / q3))
+    return {
+        "current": float(current), "threshold": float(threshold),
+        "margin": margin, "q1": q1, "median": median,
+        "conservative_slope": q3, "remaining": remaining,
+    }
+
+
 def predictor_tab():
     st.subheader("현재 CVG로 남은 O₃ 공정 횟수 추정")
     positive, model_label = load_private_slopes()
@@ -221,20 +238,15 @@ def predictor_tab():
         "오일 교체 판단 CVG [Torr]", min_value=0.0, value=0.0095,
         step=0.0001, format="%.5f",
     )
-    slow = float(positive.quantile(.25))
-    typical = float(positive.median())
-    fast = float(positive.quantile(.75))
+    prediction = calculate_conservative_prediction(current, threshold, positive)
+    conservative = prediction["remaining"]
+    fast = prediction["conservative_slope"]
 
-    def remain(slope):
-        return max(0, math.floor((threshold - current) / slope)) if slope > 0 else 0
-
-    conservative = remain(fast)
-    representative = remain(typical)
-    optimistic = remain(slow)
-    a, b, c = st.columns(3)
-    a.metric("보수적 추정", f"{conservative} 회", help="Q3의 빠른 열화 속도 적용")
-    b.metric("대표 추정", f"{representative} 회", help="열화 속도 중앙값 적용")
-    c.metric("낙관적 추정", f"{optimistic} 회", help="Q1의 느린 열화 속도 적용")
+    st.metric(
+        "보수적 예상 잔여 O₃ 공정 횟수",
+        f"{conservative} 회",
+        help="과거 공정당 idle CVG 열화 속도 분포의 Q3(빠른 열화 속도)를 적용합니다.",
+    )
 
     if current >= threshold:
         st.error("현재 CVG가 교체 기준 이상입니다. 증착 전 오일 및 장비 상태 확인을 권장합니다.")
@@ -245,8 +257,37 @@ def predictor_tab():
     else:
         st.success("보수적 추정에서도 여러 회의 공정 여유가 있습니다.")
 
-    left, right = st.columns([1.25, 1])
-    with left:
+    st.markdown("#### 계산 방법")
+    st.caption(
+        "과거 각 Pump oil 사용 주기에서 ALD 공정 횟수에 따른 idle CVG 상승 속도"
+        "(Torr/run)를 계산하고, 열화가 빠른 조건을 반영하기 위해 그 분포의 Q3를 적용합니다."
+    )
+    basis = pd.DataFrame({
+        "계산 항목": [
+            "현재 idle CVG", "오일 교체 판단 CVG", "남은 CVG 여유",
+            "보수적 열화 속도", "적용 통계 기준", "예상 잔여 횟수",
+        ],
+        "적용값": [
+            f"{prediction['current']:.5f} Torr",
+            f"{prediction['threshold']:.5f} Torr",
+            f"{prediction['margin']:.5f} Torr",
+            f"{fast:.3e} Torr/run",
+            "과거 열화 속도 Q3 (75백분위수)",
+            f"{conservative} 회",
+        ],
+    })
+    st.dataframe(basis, use_container_width=True, hide_index=True)
+    st.latex(r"N_{remain}=\left\lfloor\frac{P_{limit}-P_{current}}{slope_{Q3}}\right\rfloor")
+    st.markdown(
+        f"**실제 계산:** floor(({threshold:.5f} − {current:.5f}) / "
+        f"{fast:.3e}) = **{conservative}회**"
+    )
+    st.caption(
+        "소수점 이하는 버려 안전한 정수 횟수만 표시합니다. 표본 수가 적을 수 있으므로 "
+        "실제 장비 상태와 maintenance 기록을 함께 확인하세요."
+    )
+
+    with st.expander("계산 근거 보기: 과거 열화 속도 분포"):
         fig = go.Figure()
         fig.add_trace(go.Box(
             x=positive,
@@ -258,9 +299,9 @@ def predictor_tab():
             marker=dict(size=8, color="#2B6CB0"),
             line=dict(color="#17365D"),
         ))
-        fig.add_vline(x=slow, line_dash="dot", line_color="#2CA02C", annotation_text="Q1")
-        fig.add_vline(x=typical, line_dash="dash", line_color="#FF7F0E", annotation_text="Median")
-        fig.add_vline(x=fast, line_dash="dot", line_color="#D62728", annotation_text="Q3")
+        fig.add_vline(x=prediction["q1"], line_dash="dot", line_color="#2CA02C", annotation_text="Q1")
+        fig.add_vline(x=prediction["median"], line_dash="dash", line_color="#FF7F0E", annotation_text="Median")
+        fig.add_vline(x=fast, line_dash="dot", line_color="#D62728", annotation_text="Q3 · Conservative")
         fig.update_layout(
             title="오일 cycle별 CVG 열화 속도 Box Plot",
             xaxis_title="CVG 상승 속도 [Torr/run]",
@@ -270,20 +311,6 @@ def predictor_tab():
             margin=dict(l=30, r=30, t=70, b=50),
         )
         st.plotly_chart(fig, use_container_width=True)
-    with right:
-        basis = pd.DataFrame({
-            "기준": ["Q1 · 낙관적", "중앙값 · 대표", "Q3 · 보수적"],
-            "열화 속도 [Torr/run]": [slow, typical, fast],
-            "예상 잔여 횟수": [optimistic, representative, conservative],
-        })
-        st.markdown("#### 계산 기준")
-        st.dataframe(
-            basis.style.format({"열화 속도 [Torr/run]": "{:.3e}"}),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.latex(r"N_{remain}=\left\lfloor\frac{P_{limit}-P_{current}}{slope}\right\rfloor")
-        st.caption("표본 수가 적으므로 장비 상태와 실제 maintenance 기록을 함께 확인해야 합니다.")
 
 def log_tab():
     st.subheader("ALD 공정 로그 자동 정리 및 Step Plot")
