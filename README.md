@@ -83,7 +83,7 @@ The ALD page now supports:
 
 ### Shared ALD process log setup
 
-The Streamlit server filesystem is temporary, so persistent multi-user records are stored outside GitHub. Create a private Supabase project, run the SQL shown in the app under **ALD Process Log > 공동 공정 로그 > 관리자 설정 방법**, then add this to Streamlit Community Cloud **App settings > Secrets**:
+The Streamlit server filesystem is temporary, so persistent multi-user records are stored outside GitHub. Create a private Supabase project, run the SQL shown in the app under **ALD Process Log > 공정 로그 시트 > 관리자 설정 방법**, then add this to Streamlit Community Cloud **App settings > Secrets**:
 
 ```toml
 [ald_shared_log]

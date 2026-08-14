@@ -540,7 +540,7 @@ def predictor_tab():
 
 
 def shared_log_tab():
-    st.subheader("연구실 ALD 공정 공동 로그")
+    st.subheader("FMDL ALD 로그")
     st.caption("기록은 GitHub가 아닌 비공개 Supabase 테이블에 저장되어 연구실 사용자가 함께 조회합니다.")
     if supabase_config() is None:
         st.warning("공유 DB가 연결되지 않아 아직 저장할 수 없습니다.")
@@ -808,7 +808,7 @@ def log_tab():
 def main():
     st.title("ALD Vacuum Life & Process Log Analyzer")
     st.caption("O₃ 공정 잔여 횟수 예측 · BTorr 로그 자동 cycle 정리 · TMA 공급 상태 분석")
-    predictor, shared, log = st.tabs(["남은 공정 횟수 예측", "공동 공정 로그", "공정 로그 자동 Plot"])
+    predictor, shared, log = st.tabs(["남은 공정 횟수 예측", "공정 로그 시트", "공정 로그 자동 Plot"])
     with predictor:
         predictor_tab()
     with shared:
