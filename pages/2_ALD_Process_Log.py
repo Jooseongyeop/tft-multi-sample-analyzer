@@ -106,34 +106,124 @@ def infer_cycle_counts(raw: bytes, settings: dict) -> dict:
     }
 
 
+def detect_main_o3_anchor_peaks(
+    df: pd.DataFrame,
+    main_start_s: float,
+    main_cycles: int,
+    settings: dict,
+) -> pd.DataFrame:
+    """Detect the large O3 pressure response once per Main cycle.
+
+    These high-amplitude peaks provide measured timing anchors.  The TMA
+    search can then follow real valve timing instead of accumulating recipe
+    timing error over many cycles.
+    """
+    cycle_s = sum(settings[key] for key in ("tma_pulse_s", "tma_purge_s", "main_o3_pulse_s", "main_o3_purge_s"))
+    tolerance_s = float(settings.get("tma_search_tolerance_s", 6.0))
+    region = df[
+        (df.elapsed_s >= main_start_s - tolerance_s)
+        & (df.elapsed_s <= main_start_s + main_cycles * cycle_s + tolerance_s)
+    ][["elapsed_s", "BTorr"]].dropna().sort_values("elapsed_s").reset_index(drop=True)
+    if len(region) < 3:
+        return pd.DataFrame(columns=["o3_peak_time_s", "o3_peak_btorr"])
+
+    baseline_level = float(region.BTorr.quantile(0.20))
+    high_level = float(region.BTorr.quantile(0.95))
+    amplitude = high_level - baseline_level
+    minimum_o3_amplitude = max(0.05, float(settings.get("tma_delta_limit", 0.01)) * 4.0)
+    if not np.isfinite(amplitude) or amplitude < minimum_o3_amplitude:
+        return pd.DataFrame(columns=["o3_peak_time_s", "o3_peak_btorr"])
+
+    threshold = baseline_level + 0.45 * amplitude
+    above = region.BTorr >= threshold
+    group_id = above.ne(above.shift(fill_value=False)).cumsum()
+    candidates = []
+    for _, segment in region[above].groupby(group_id[above]):
+        peak_index = segment.BTorr.idxmax()
+        candidates.append({
+            "o3_peak_time_s": float(region.loc[peak_index, "elapsed_s"]),
+            "o3_peak_btorr": float(region.loc[peak_index, "BTorr"]),
+        })
+
+    # Merge any split pieces of the same broad O3 response.
+    merged = []
+    minimum_spacing_s = cycle_s * 0.55
+    for candidate in candidates:
+        if merged and candidate["o3_peak_time_s"] - merged[-1]["o3_peak_time_s"] < minimum_spacing_s:
+            if candidate["o3_peak_btorr"] > merged[-1]["o3_peak_btorr"]:
+                merged[-1] = candidate
+        else:
+            merged.append(candidate)
+    return pd.DataFrame(merged[:main_cycles])
+
+
 def analyze_tma_cycles(df: pd.DataFrame, main_start_s: float, main_cycles: int, settings: dict) -> pd.DataFrame:
     cycle_s = sum(settings[key] for key in ("tma_pulse_s", "tma_purge_s", "main_o3_pulse_s", "main_o3_purge_s"))
     baseline_window_s = float(settings.get("baseline_window_s", 3.0))
+    search_tolerance_s = float(settings.get("tma_search_tolerance_s", 6.0))
+    o3_anchors = detect_main_o3_anchor_peaks(df, main_start_s, main_cycles, settings)
+    minimum_anchor_count = 1 if main_cycles == 1 else max(2, int(np.ceil(main_cycles * 0.6)))
+    use_o3_sync = len(o3_anchors) >= minimum_anchor_count
+
+    elapsed_values = np.sort(pd.to_numeric(df.elapsed_s, errors="coerce").dropna().unique())
+    positive_steps = np.diff(elapsed_values)
+    sample_interval_s = float(np.median(positive_steps[positive_steps > 0])) if np.any(positive_steps > 0) else 0.1
+    baseline_guard_s = max(sample_interval_s, float(settings["tma_pulse_s"]) * 0.5)
+    tma_to_o3_lag_s = float(settings["tma_pulse_s"] + settings["tma_purge_s"])
+
     rows = []
-    for cycle in range(1, main_cycles + 1):
-        start = main_start_s + (cycle - 1) * cycle_s
-        pulse_end = start + settings["tma_pulse_s"]
-        baseline = df[(df.elapsed_s >= start - baseline_window_s) & (df.elapsed_s < start)].BTorr
-        pulse = df[(df.elapsed_s >= start) & (df.elapsed_s < pulse_end)].BTorr
-        if baseline.empty or pulse.empty:
+    if use_o3_sync:
+        events = []
+        for cycle, anchor in enumerate(o3_anchors.itertuples(index=False), start=1):
+            expected_tma_time_s = float(anchor.o3_peak_time_s) - tma_to_o3_lag_s
+            events.append((cycle, expected_tma_time_s, float(anchor.o3_peak_time_s), "O3 peak synchronized"))
+    else:
+        events = [
+            (cycle, main_start_s + (cycle - 1) * cycle_s, np.nan, "Recipe-time fallback")
+            for cycle in range(1, main_cycles + 1)
+        ]
+
+    for cycle, expected_tma_time_s, o3_peak_time_s, method in events:
+        if use_o3_sync:
+            search_start_s = expected_tma_time_s - search_tolerance_s
+            search_end_s = expected_tma_time_s + search_tolerance_s
+        else:
+            search_start_s = expected_tma_time_s
+            search_end_s = expected_tma_time_s + float(settings["tma_pulse_s"])
+        pulse_window = df[(df.elapsed_s >= search_start_s) & (df.elapsed_s <= search_end_s)].BTorr
+        if pulse_window.empty:
             continue
+
+        peak_index = pulse_window.idxmax()
+        pulse_peak = float(df.loc[peak_index, "BTorr"])
+        peak_time_s = float(df.loc[peak_index, "elapsed_s"])
+        baseline_end_s = peak_time_s - baseline_guard_s
+        baseline_start_s = baseline_end_s - baseline_window_s
+        baseline = df[
+            (df.elapsed_s >= baseline_start_s)
+            & (df.elapsed_s <= baseline_end_s)
+        ].BTorr
+        if baseline.empty:
+            continue
+
         baseline_mean = float(baseline.mean())
-        pulse_peak = float(pulse.max())
-        peak_time_s = float(df.loc[pulse.idxmax(), "elapsed_s"])
         delta = pulse_peak - baseline_mean
         rows.append({
             "main_cycle": cycle,
-            "cycle_start_s": start,
-            "baseline_time_s": start,
+            "cycle_start_s": expected_tma_time_s,
+            "expected_tma_time_s": expected_tma_time_s,
+            "tma_search_start_s": search_start_s,
+            "tma_search_end_s": search_end_s,
+            "o3_anchor_time_s": o3_peak_time_s,
+            "baseline_time_s": baseline_end_s,
             "tma_peak_time_s": peak_time_s,
             "baseline_mean_btorr": baseline_mean,
             "tma_peak_btorr": pulse_peak,
             "pressure_delta_btorr": delta,
+            "detection_method": method,
             "replacement_needed": bool(delta <= settings["tma_delta_limit"]),
         })
     return pd.DataFrame(rows)
-
-
 def parse_ald_log(raw: bytes, filename: str, settings: dict):
     df, header = extract_log_core(raw)
     inferred = infer_cycle_counts(raw, settings)
@@ -245,22 +335,12 @@ def process_plot(df, boundaries, tma_summary, show_cycles, cycle_every, main_cyc
             x=base + pd.to_timedelta(tma_summary.tma_peak_time_s, unit="s"),
             y=tma_summary.tma_peak_btorr,
             mode="markers",
-            name="TMA pulse peak",
+            name="TMA pulse 구간 최댓값",
             marker=dict(color="#F2A900", size=7, symbol="circle-open", line=dict(width=2)),
             customdata=tma_summary[["main_cycle", "baseline_mean_btorr", "pressure_delta_btorr"]],
             hovertemplate="Main cycle %{customdata[0]}<br>Peak=%{y:.5f} Torr<br>Baseline=%{customdata[1]:.5f} Torr<br>ΔP=%{customdata[2]:.5f} Torr<extra></extra>",
         ))
-        flagged = tma_summary[tma_summary.replacement_needed]
-        if not flagged.empty:
-            fig.add_trace(go.Scatter(
-                x=base + pd.to_timedelta(flagged.tma_peak_time_s, unit="s"),
-                y=flagged.tma_peak_btorr,
-                mode="markers",
-                name="ΔP ≤ 기준 (교체 검토)",
-                marker=dict(color="#D62728", size=10, symbol="x"),
-                customdata=flagged[["main_cycle", "baseline_mean_btorr", "pressure_delta_btorr"]],
-                hovertemplate="Main cycle %{customdata[0]}<br>Peak=%{y:.5f} Torr<br>Baseline=%{customdata[1]:.5f} Torr<br>ΔP=%{customdata[2]:.5f} Torr<extra></extra>",
-            ))
+
     fig.update_layout(height=600, margin=dict(l=45, r=25, t=55, b=90), hovermode="closest", legend=dict(orientation="h", y=-0.18), xaxis_title="Process time (hh:mm:ss)", yaxis_title="Measured pressure, BTorr")
     fig.update_xaxes(tickformat="%H:%M:%S", showgrid=True, gridcolor="rgba(0,0,0,.08)")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,.08)")
@@ -271,7 +351,7 @@ def tma_peak_baseline_plot(tma_summary: pd.DataFrame):
     fig = go.Figure()
     if not tma_summary.empty:
         fig.add_trace(go.Scatter(x=tma_summary.main_cycle, y=tma_summary.baseline_mean_btorr, mode="lines+markers", name="Baseline 평균", line=dict(color="#E45756")))
-        fig.add_trace(go.Scatter(x=tma_summary.main_cycle, y=tma_summary.tma_peak_btorr, mode="lines+markers", name="TMA pulse peak", line=dict(color="#F2A900")))
+        fig.add_trace(go.Scatter(x=tma_summary.main_cycle, y=tma_summary.tma_peak_btorr, mode="lines+markers", name="TMA pulse 구간 최댓값", line=dict(color="#F2A900")))
     fig.update_layout(height=410, xaxis_title="Main cycle", yaxis_title="Pressure [Torr]", margin=dict(l=40, r=25, t=40, b=45), legend=dict(orientation="h"))
     return fig
 
@@ -640,6 +720,7 @@ def recipe_settings_panel(defaults: dict) -> dict:
             "post_delay_s": c4.number_input("Post delay", value=float(defaults["post_delay_s"])),
             "baseline_window_s": c1.number_input("TMA baseline 평균 구간 [s]", value=float(defaults["baseline_window_s"]), min_value=0.1),
             "tma_delta_limit": c2.number_input("TMA 교체 기준 ΔP [Torr]", value=float(defaults["tma_delta_limit"]), min_value=0.0, step=0.001, format="%.3f"),
+            "tma_search_tolerance_s": c3.number_input("O₃ 기준 TMA peak 탐색 허용 오차 [s]", value=float(defaults["tma_search_tolerance_s"]), min_value=0.5, step=0.5),
             "auto_cycles": auto_cycles,
             "boundary_tolerance_s": 5.0,
         }
@@ -649,7 +730,7 @@ def recipe_settings_panel(defaults: dict) -> dict:
 def log_tab():
     st.subheader("ALD 공정 로그 자동 정리 · Step Plot")
     files = st.file_uploader("ALD 공정 로그 TXT 업로드", type=["txt", "log"], accept_multiple_files=True)
-    defaults = {"pre_delay_s": 60.0, "pre_flow_s": 120.0, "o3_pulse_s": 50.0, "o3_purge_s": 10.0, "o3_cycles": 30, "tma_pulse_s": 0.5, "tma_purge_s": 20.0, "main_o3_pulse_s": 5.0, "main_o3_purge_s": 20.0, "main_cycles": 101, "post_flow_s": 120.0, "post_delay_s": 60.0, "baseline_window_s": 3.0, "tma_delta_limit": 0.01}
+    defaults = {"pre_delay_s": 60.0, "pre_flow_s": 120.0, "o3_pulse_s": 50.0, "o3_purge_s": 10.0, "o3_cycles": 30, "tma_pulse_s": 0.5, "tma_purge_s": 20.0, "main_o3_pulse_s": 5.0, "main_o3_purge_s": 20.0, "main_cycles": 101, "post_flow_s": 120.0, "post_delay_s": 60.0, "baseline_window_s": 3.0, "tma_delta_limit": 0.01, "tma_search_tolerance_s": 6.0}
     settings = recipe_settings_panel(defaults)
     if not files:
         st.info("로그를 업로드하면 O₃/Main cycle을 자동 계산하고, TMA pulse 응답과 교체 필요 구간을 분석합니다.")
@@ -664,20 +745,22 @@ def log_tab():
         st.error(f"로그 해석 실패: {exc}")
         return
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     c1.metric("자동 O₃ cycles", str(metadata["o3_cycles_used"]))
     c2.metric("자동 Main cycles", str(metadata["main_cycles_used"]))
     c3.metric("TMA ΔP 평균", f"{tma_summary.pressure_delta_btorr.mean():.5f} Torr" if not tma_summary.empty else "N/A")
-    first_bad = metadata["first_tma_replacement_cycle"]
-    c4.metric("TMA 교체 필요 시작", f"Main {first_bad} cycle" if first_bad else "감지 안 됨")
     st.caption(f"Cycle 자동 계산 근거: {metadata['cycle_detection_source']} · 예상/실제 시간 차이 {metadata['boundary_error_s']:.1f} s")
+    if not tma_summary.empty and (tma_summary.detection_method == "O3 peak synchronized").all():
+        st.caption("TMA 검출 기준: 실제 Main O₃ 피크에 동기화된 원본 BTorr 구간 최댓값")
+    else:
+        st.warning("Main O₃ 기준 피크 수가 부족해 일부 TMA 위치를 레시피 예상 시각으로 계산했습니다. Recipe 시간 설정을 확인해 주세요.")
 
     show_cycles = st.checkbox("Cycle 경계 표시", value=False)
     cycle_every = st.slider("Cycle 경계 표시 간격", 1, 20, 10, disabled=not show_cycles)
     process_figure = process_plot(df, boundaries, tma_summary, show_cycles, cycle_every, main_cycle_s, o3_cycle_s)
     st.plotly_chart(process_figure, use_container_width=True)
     st.markdown("#### TMA pulse 응답 분석")
-    st.caption("각 Main cycle에서 빨간 baseline은 TMA pulse 직전 설정 구간의 평균 압력이고, 주황색 마커는 해당 TMA pulse 구간의 실제 최댓값입니다. ΔP = peak − baseline이며, ΔP ≤ 0.01 Torr는 교체 검토 구간으로 표시합니다.")
+    st.caption("큰 O₃ 압력 피크를 각 Main cycle의 시간 기준점으로 검출한 뒤, 그 앞의 TMA 탐색 구간에서 원본 BTorr 최댓값을 찾습니다. 빨간 선은 피크 직전 baseline 평균, 주황 원은 TMA 구간 최댓값입니다. 교체 검토 표시는 오른쪽 ΔP 그래프에서 확인할 수 있습니다.")
     comparison_col, delta_col = st.columns(2)
     with comparison_col:
         st.plotly_chart(tma_peak_baseline_plot(tma_summary), use_container_width=True)
