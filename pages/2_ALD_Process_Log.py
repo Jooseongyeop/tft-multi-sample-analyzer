@@ -119,10 +119,13 @@ def analyze_tma_cycles(df: pd.DataFrame, main_start_s: float, main_cycles: int, 
             continue
         baseline_mean = float(baseline.mean())
         pulse_peak = float(pulse.max())
+        peak_time_s = float(df.loc[pulse.idxmax(), "elapsed_s"])
         delta = pulse_peak - baseline_mean
         rows.append({
             "main_cycle": cycle,
             "cycle_start_s": start,
+            "baseline_time_s": start,
+            "tma_peak_time_s": peak_time_s,
             "baseline_mean_btorr": baseline_mean,
             "tma_peak_btorr": pulse_peak,
             "pressure_delta_btorr": delta,
@@ -221,42 +224,68 @@ def process_plot(df, boundaries, tma_summary, show_cycles, cycle_every, main_cyc
     fig.add_trace(go.Scatter(x=df.elapsed_time, y=df.BTorr, mode="lines", name="Measured BTorr", line=dict(color="#17365D", width=1)))
     colors = ["rgba(91,155,213,.14)", "rgba(112,173,71,.13)", "rgba(255,192,0,.13)", "rgba(165,165,165,.14)"]
     base = pd.Timestamp("2000-01-01")
-    for (label, start, end), color in zip(boundaries, colors):
-        fig.add_vrect(x0=base + pd.Timedelta(seconds=start), x1=base + pd.Timedelta(seconds=end), fillcolor=color, line_width=0, annotation_text=label, annotation_position="top left")
+    for (label, start_s, end_s), color in zip(boundaries, colors):
+        fig.add_vrect(x0=base + pd.Timedelta(seconds=start_s), x1=base + pd.Timedelta(seconds=end_s), fillcolor=color, line_width=0, annotation_text=label, annotation_position="top left")
     if show_cycles:
-        for label, start, end in boundaries[1:3]:
+        for label, start_s, end_s in boundaries[1:3]:
             duration = o3_cycle_s if label == "NCD_O3_ONLY" else main_cycle_s
-            for value in np.arange(start, end + 0.01, duration * cycle_every):
+            for value in np.arange(start_s, end_s + 0.01, duration * cycle_every):
                 fig.add_vline(x=base + pd.Timedelta(seconds=float(value)), line_width=0.45, line_dash="dot", line_color="rgba(80,80,80,.35)")
     if not tma_summary.empty:
+        fig.add_trace(go.Scatter(
+            x=base + pd.to_timedelta(tma_summary.baseline_time_s, unit="s"),
+            y=tma_summary.baseline_mean_btorr,
+            mode="lines",
+            name="TMA 직전 baseline 평균",
+            line=dict(color="#E45756", width=2),
+            customdata=tma_summary[["main_cycle"]],
+            hovertemplate="Main cycle %{customdata[0]}<br>Baseline=%{y:.5f} Torr<extra></extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=base + pd.to_timedelta(tma_summary.tma_peak_time_s, unit="s"),
+            y=tma_summary.tma_peak_btorr,
+            mode="markers",
+            name="TMA pulse peak",
+            marker=dict(color="#F2A900", size=7, symbol="circle-open", line=dict(width=2)),
+            customdata=tma_summary[["main_cycle", "baseline_mean_btorr", "pressure_delta_btorr"]],
+            hovertemplate="Main cycle %{customdata[0]}<br>Peak=%{y:.5f} Torr<br>Baseline=%{customdata[1]:.5f} Torr<br>ΔP=%{customdata[2]:.5f} Torr<extra></extra>",
+        ))
         flagged = tma_summary[tma_summary.replacement_needed]
         if not flagged.empty:
             fig.add_trace(go.Scatter(
-                x=base + pd.to_timedelta(flagged.cycle_start_s, unit="s"),
+                x=base + pd.to_timedelta(flagged.tma_peak_time_s, unit="s"),
                 y=flagged.tma_peak_btorr,
                 mode="markers",
-                name="TMA ΔP ≤ 0.01 (교체 필요)",
-                marker=dict(color="#D62728", size=9, symbol="x"),
-                customdata=flagged[["main_cycle", "pressure_delta_btorr"]],
-                hovertemplate="Main cycle %{customdata[0]}<br>ΔP=%{customdata[1]:.5f} Torr<extra></extra>",
+                name="ΔP ≤ 기준 (교체 검토)",
+                marker=dict(color="#D62728", size=10, symbol="x"),
+                customdata=flagged[["main_cycle", "baseline_mean_btorr", "pressure_delta_btorr"]],
+                hovertemplate="Main cycle %{customdata[0]}<br>Peak=%{y:.5f} Torr<br>Baseline=%{customdata[1]:.5f} Torr<br>ΔP=%{customdata[2]:.5f} Torr<extra></extra>",
             ))
-    fig.update_layout(height=560, margin=dict(l=45, r=25, t=55, b=45), hovermode="x unified", legend=dict(orientation="h", y=-0.18), xaxis_title="Process time (hh:mm:ss)", yaxis_title="Measured pressure, BTorr")
+    fig.update_layout(height=600, margin=dict(l=45, r=25, t=55, b=90), hovermode="closest", legend=dict(orientation="h", y=-0.18), xaxis_title="Process time (hh:mm:ss)", yaxis_title="Measured pressure, BTorr")
     fig.update_xaxes(tickformat="%H:%M:%S", showgrid=True, gridcolor="rgba(0,0,0,.08)")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,.08)")
+    return fig
+
+
+def tma_peak_baseline_plot(tma_summary: pd.DataFrame):
+    fig = go.Figure()
+    if not tma_summary.empty:
+        fig.add_trace(go.Scatter(x=tma_summary.main_cycle, y=tma_summary.baseline_mean_btorr, mode="lines+markers", name="Baseline 평균", line=dict(color="#E45756")))
+        fig.add_trace(go.Scatter(x=tma_summary.main_cycle, y=tma_summary.tma_peak_btorr, mode="lines+markers", name="TMA pulse peak", line=dict(color="#F2A900")))
+    fig.update_layout(height=410, xaxis_title="Main cycle", yaxis_title="Pressure [Torr]", margin=dict(l=40, r=25, t=40, b=45), legend=dict(orientation="h"))
     return fig
 
 
 def tma_delta_plot(tma_summary: pd.DataFrame, limit: float):
     fig = go.Figure()
     if not tma_summary.empty:
-        fig.add_trace(go.Scatter(x=tma_summary.main_cycle, y=tma_summary.pressure_delta_btorr, mode="lines+markers", name="TMA pulse − baseline", line=dict(color="#2B6CB0")))
+        fig.add_trace(go.Scatter(x=tma_summary.main_cycle, y=tma_summary.pressure_delta_btorr, mode="lines+markers", name="Peak − baseline", line=dict(color="#2B6CB0")))
         fig.add_hline(y=limit, line_dash="dash", line_color="#D62728", annotation_text=f"교체 기준 {limit:.3f} Torr")
         flagged = tma_summary[tma_summary.replacement_needed]
         if not flagged.empty:
-            fig.add_trace(go.Scatter(x=flagged.main_cycle, y=flagged.pressure_delta_btorr, mode="markers", name="교체 필요", marker=dict(color="#D62728", size=10, symbol="x")))
+            fig.add_trace(go.Scatter(x=flagged.main_cycle, y=flagged.pressure_delta_btorr, mode="markers", name="교체 검토", marker=dict(color="#D62728", size=10, symbol="x")))
     fig.update_layout(height=410, xaxis_title="Main cycle", yaxis_title="TMA peak − baseline 평균 [Torr]", margin=dict(l=40, r=25, t=40, b=45))
     return fig
-
 
 def excel_bytes(df, step_summary, cycle_summary, tma_summary, metadata):
     out = io.BytesIO()
@@ -575,8 +604,12 @@ def log_tab():
     process_figure = process_plot(df, boundaries, tma_summary, show_cycles, cycle_every, main_cycle_s, o3_cycle_s)
     st.plotly_chart(process_figure, use_container_width=True)
     st.markdown("#### TMA pulse 응답 분석")
-    st.caption("각 Main cycle의 TMA pulse peak와 pulse 직전 baseline 구간 평균의 차이(ΔP)를 계산합니다. ΔP ≤ 0.01 Torr는 TMA 공급 응답 저하로 표시합니다.")
-    st.plotly_chart(tma_delta_plot(tma_summary, settings["tma_delta_limit"]), use_container_width=True)
+    st.caption("각 Main cycle에서 빨간 baseline은 TMA pulse 직전 설정 구간의 평균 압력이고, 주황색 마커는 해당 TMA pulse 구간의 실제 최댓값입니다. ΔP = peak − baseline이며, ΔP ≤ 0.01 Torr는 교체 검토 구간으로 표시합니다.")
+    comparison_col, delta_col = st.columns(2)
+    with comparison_col:
+        st.plotly_chart(tma_peak_baseline_plot(tma_summary), use_container_width=True)
+    with delta_col:
+        st.plotly_chart(tma_delta_plot(tma_summary, settings["tma_delta_limit"]), use_container_width=True)
 
     tabs = st.tabs(["Step 요약", "Cycle 요약", "TMA pulse 분석", "업로드 로그 전체 TMA 수명"])
     tabs[0].dataframe(step_summary, use_container_width=True, hide_index=True)

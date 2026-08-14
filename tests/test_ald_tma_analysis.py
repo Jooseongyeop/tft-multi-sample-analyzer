@@ -34,8 +34,31 @@ class TmaCycleAnalysisTests(unittest.TestCase):
         })
         result = ALD.analyze_tma_cycles(df, 10.0, 1, self.settings)
         self.assertAlmostEqual(result.iloc[0].tma_peak_btorr, 0.318)
+        self.assertAlmostEqual(result.iloc[0].baseline_mean_btorr, 0.300)
+        self.assertAlmostEqual(result.iloc[0].tma_peak_time_s, 10.5)
         self.assertAlmostEqual(result.iloc[0].pressure_delta_btorr, 0.018)
         self.assertFalse(bool(result.iloc[0].replacement_needed))
+
+    def test_process_plot_shows_baseline_and_tma_peak(self):
+        df = pd.DataFrame({
+            "elapsed_time": pd.to_datetime([0.0, 1.0], unit="s", origin="2000-01-01"),
+            "BTorr": [0.300, 0.318],
+        })
+        summary = pd.DataFrame({
+            "main_cycle": [1], "cycle_start_s": [1.0],
+            "baseline_time_s": [1.0], "tma_peak_time_s": [1.5],
+            "baseline_mean_btorr": [0.300], "tma_peak_btorr": [0.318],
+            "pressure_delta_btorr": [0.018], "replacement_needed": [False],
+        })
+        figure = ALD.process_plot(
+            df, [("Pre-process", 0.0, 0.5), ("NCD_O3_ONLY", 0.5, 1.0),
+                 ("Main deposition", 1.0, 2.0), ("Post-process", 2.0, 2.5)],
+            summary, False, 10, 1.0, 0.5,
+        )
+        names = [trace.name for trace in figure.data]
+        self.assertIn("TMA 직전 baseline 평균", names)
+        self.assertIn("TMA pulse peak", names)
+
     def test_infers_cycles_from_total_layer_and_duration(self):
         settings = {
             "pre_delay_s": 1.0, "pre_flow_s": 1.0,
