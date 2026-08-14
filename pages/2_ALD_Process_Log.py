@@ -118,13 +118,13 @@ def analyze_tma_cycles(df: pd.DataFrame, main_start_s: float, main_cycles: int, 
         if baseline.empty or pulse.empty:
             continue
         baseline_mean = float(baseline.mean())
-        pulse_mean = float(pulse.mean())
-        delta = pulse_mean - baseline_mean
+        pulse_peak = float(pulse.max())
+        delta = pulse_peak - baseline_mean
         rows.append({
             "main_cycle": cycle,
             "cycle_start_s": start,
             "baseline_mean_btorr": baseline_mean,
-            "tma_pulse_mean_btorr": pulse_mean,
+            "tma_peak_btorr": pulse_peak,
             "pressure_delta_btorr": delta,
             "replacement_needed": bool(delta <= settings["tma_delta_limit"]),
         })
@@ -233,7 +233,7 @@ def process_plot(df, boundaries, tma_summary, show_cycles, cycle_every, main_cyc
         if not flagged.empty:
             fig.add_trace(go.Scatter(
                 x=base + pd.to_timedelta(flagged.cycle_start_s, unit="s"),
-                y=flagged.tma_pulse_mean_btorr,
+                y=flagged.tma_peak_btorr,
                 mode="markers",
                 name="TMA ΔP ≤ 0.01 (교체 필요)",
                 marker=dict(color="#D62728", size=9, symbol="x"),
@@ -254,7 +254,7 @@ def tma_delta_plot(tma_summary: pd.DataFrame, limit: float):
         flagged = tma_summary[tma_summary.replacement_needed]
         if not flagged.empty:
             fig.add_trace(go.Scatter(x=flagged.main_cycle, y=flagged.pressure_delta_btorr, mode="markers", name="교체 필요", marker=dict(color="#D62728", size=10, symbol="x")))
-    fig.update_layout(height=410, xaxis_title="Main cycle", yaxis_title="TMA 평균 압력 − baseline 평균 [Torr]", margin=dict(l=40, r=25, t=40, b=45))
+    fig.update_layout(height=410, xaxis_title="Main cycle", yaxis_title="TMA peak − baseline 평균 [Torr]", margin=dict(l=40, r=25, t=40, b=45))
     return fig
 
 
@@ -575,7 +575,7 @@ def log_tab():
     process_figure = process_plot(df, boundaries, tma_summary, show_cycles, cycle_every, main_cycle_s, o3_cycle_s)
     st.plotly_chart(process_figure, use_container_width=True)
     st.markdown("#### TMA pulse 응답 분석")
-    st.caption("각 Main cycle 시작 직전 baseline 구간의 평균과 TMA pulse 구간 평균의 차이(ΔP)를 계산합니다. ΔP ≤ 0.01 Torr는 TMA 공급 응답 저하로 표시합니다.")
+    st.caption("각 Main cycle의 TMA pulse peak와 pulse 직전 baseline 구간 평균의 차이(ΔP)를 계산합니다. ΔP ≤ 0.01 Torr는 TMA 공급 응답 저하로 표시합니다.")
     st.plotly_chart(tma_delta_plot(tma_summary, settings["tma_delta_limit"]), use_container_width=True)
 
     tabs = st.tabs(["Step 요약", "Cycle 요약", "TMA pulse 분석", "업로드 로그 전체 TMA 수명"])
