@@ -27,6 +27,15 @@ class TmaCycleAnalysisTests(unittest.TestCase):
         self.assertFalse(bool(result.iloc[1].replacement_needed))
         self.assertAlmostEqual(result.iloc[0].pressure_delta_btorr, 0.005)
 
+    def test_uses_tma_peak_not_pulse_average(self):
+        df = pd.DataFrame({
+            "elapsed_s": [9.0, 10.0, 10.5],
+            "BTorr": [0.300, 0.300, 0.318],
+        })
+        result = ALD.analyze_tma_cycles(df, 10.0, 1, self.settings)
+        self.assertAlmostEqual(result.iloc[0].tma_peak_btorr, 0.318)
+        self.assertAlmostEqual(result.iloc[0].pressure_delta_btorr, 0.018)
+        self.assertFalse(bool(result.iloc[0].replacement_needed))
     def test_infers_cycles_from_total_layer_and_duration(self):
         settings = {
             "pre_delay_s": 1.0, "pre_flow_s": 1.0,

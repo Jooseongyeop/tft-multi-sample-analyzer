@@ -76,7 +76,7 @@ model_label = "Lab O3 oil-cycle model"
 The ALD page now supports:
 
 - automatic O3-flow and Main cycle counts after log upload (`Total Layer` is used for Main cycles; O3 cycles are inferred from measured duration and recipe step times)
-- cycle-by-cycle Main-step TMA response: mean TMA-pulse pressure minus the mean pressure in the preceding baseline window
+- cycle-by-cycle Main-step TMA response: TMA-pulse peak pressure minus the mean pressure in the preceding baseline window
 - red marking and a separate trend plot when TMA delta-P is at or below the editable replacement threshold (default `0.01 Torr`)
 - cumulative TMA-pulse replacement estimate across all uploaded logs, ordered by process start time
 - an optional shared laboratory process log backed by a private Supabase project
@@ -100,8 +100,25 @@ For each Main cycle:
 
 ```text
 baseline mean = average BTorr during the configurable window immediately before TMA pulse
-TMA pulse mean = average BTorr during the configured TMA pulse interval
-delta-P = TMA pulse mean - baseline mean
+TMA pulse peak = maximum BTorr during the configured TMA pulse interval
+delta-P = TMA pulse peak - baseline mean
 ```
 
 A cycle is marked for TMA replacement review when `delta-P <= 0.01 Torr` by default. This is a process-monitoring rule, not a standalone proof that the TMA source is exhausted; confirm valve operation, line temperature, pressure sensor condition, and recipe timing before replacement.
+
+### Editing and deleting shared ALD log records
+
+Shared records can be edited or deleted from the ALD shared-log tab after two one-time administrator steps:
+
+1. Run the UPDATE/DELETE policy SQL displayed in the app's management expander.
+2. Add an edit password inside the existing Streamlit secret section:
+
+```toml
+[ald_shared_log]
+url = "https://YOUR_PROJECT.supabase.co"
+key = "YOUR_PUBLISHABLE_KEY"
+table = "ald_run_log"
+edit_password = "YOUR_LAB_ADMIN_PASSWORD"
+```
+
+The password is stored only in Streamlit Secrets and must not be committed to GitHub. Deletion requires both the password and an explicit confirmation checkbox. The app also accepts a Supabase URL accidentally copied with a trailing `/rest/v1` and normalizes it automatically.

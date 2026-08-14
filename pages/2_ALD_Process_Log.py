@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hmac
 import json
 import math
 import re
@@ -117,13 +118,13 @@ def analyze_tma_cycles(df: pd.DataFrame, main_start_s: float, main_cycles: int, 
         if baseline.empty or pulse.empty:
             continue
         baseline_mean = float(baseline.mean())
-        pulse_mean = float(pulse.mean())
-        delta = pulse_mean - baseline_mean
+        pulse_peak = float(pulse.max())
+        delta = pulse_peak - baseline_mean
         rows.append({
             "main_cycle": cycle,
             "cycle_start_s": start,
             "baseline_mean_btorr": baseline_mean,
-            "tma_pulse_mean_btorr": pulse_mean,
+            "tma_peak_btorr": pulse_peak,
             "pressure_delta_btorr": delta,
             "replacement_needed": bool(delta <= settings["tma_delta_limit"]),
         })
@@ -232,7 +233,7 @@ def process_plot(df, boundaries, tma_summary, show_cycles, cycle_every, main_cyc
         if not flagged.empty:
             fig.add_trace(go.Scatter(
                 x=base + pd.to_timedelta(flagged.cycle_start_s, unit="s"),
-                y=flagged.tma_pulse_mean_btorr,
+                y=flagged.tma_peak_btorr,
                 mode="markers",
                 name="TMA ΔP ≤ 0.01 (교체 필요)",
                 marker=dict(color="#D62728", size=9, symbol="x"),
@@ -253,7 +254,7 @@ def tma_delta_plot(tma_summary: pd.DataFrame, limit: float):
         flagged = tma_summary[tma_summary.replacement_needed]
         if not flagged.empty:
             fig.add_trace(go.Scatter(x=flagged.main_cycle, y=flagged.pressure_delta_btorr, mode="markers", name="교체 필요", marker=dict(color="#D62728", size=10, symbol="x")))
-    fig.update_layout(height=410, xaxis_title="Main cycle", yaxis_title="TMA 평균 압력 − baseline 평균 [Torr]", margin=dict(l=40, r=25, t=40, b=45))
+    fig.update_layout(height=410, xaxis_title="Main cycle", yaxis_title="TMA peak − baseline 평균 [Torr]", margin=dict(l=40, r=25, t=40, b=45))
     return fig
 
 
@@ -296,7 +297,8 @@ def calculate_conservative_prediction(current, threshold, slopes):
 def supabase_config():
     try:
         config = st.secrets["ald_shared_log"]
-        return str(config["url"]).rstrip("/"), str(config["key"]), str(config.get("table", "ald_run_log"))
+        url = re.sub(r"/rest/v1/?$", "", str(config["url"]).rstrip("/"))
+        return url, str(config["key"]), str(config.get("table", "ald_run_log"))
     except Exception:
         return None
 
@@ -332,6 +334,20 @@ def read_shared_log() -> pd.DataFrame:
 def add_shared_log(payload: dict):
     return supabase_request("POST", "", payload)
 
+
+def update_shared_log(record_id: int, payload: dict):
+    return supabase_request("PATCH", f"?id=eq.{int(record_id)}", payload)
+
+
+def delete_shared_log(record_id: int):
+    return supabase_request("DELETE", f"?id=eq.{int(record_id)}")
+
+
+def shared_log_edit_password() -> str:
+    try:
+        return str(st.secrets["ald_shared_log"].get("edit_password", ""))
+    except Exception:
+        return ""
 
 def predictor_tab():
     st.subheader("현재 CVG로 남은 O₃ 공정 횟수 추정")
@@ -423,6 +439,83 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
     display = records[[column for column in ["process_date", "operator", "o3_cycles", "main_cycles", "idle_cvg", "note", "created_at"] if column in records]].copy()
     display.rename(columns={"process_date": "공정일", "operator": "작성자", "o3_cycles": "O₃ cycles", "main_cycles": "Main cycles", "idle_cvg": "Idle CVG [Torr]", "note": "메모", "created_at": "저장 시각"}, inplace=True)
     st.dataframe(display.sort_index(ascending=False), use_container_width=True, hide_index=True)
+    st.markdown("#### 기록 수정 · 삭제")
+    configured_password = shared_log_edit_password()
+    if not configured_password:
+        st.warning("수정·삭제 관리 비밀번호가 아직 설정되지 않았습니다.")
+        with st.expander("관리자 초기 설정: UPDATE/DELETE 권한과 비밀번호"):
+            st.markdown("Supabase SQL Editor에서 아래 SQL을 한 번 실행하세요.")
+            st.code('''drop policy if exists "lab update" on public.ald_run_log;
+drop policy if exists "lab delete" on public.ald_run_log;
+create policy "lab update" on public.ald_run_log
+  for update to anon using (true) with check (true);
+create policy "lab delete" on public.ald_run_log
+  for delete to anon using (true);''', language="sql")
+            st.markdown("그다음 Streamlit Secrets의 `[ald_shared_log]` 아래에 관리 비밀번호를 추가하세요.")
+            st.code('edit_password = "연구실에서 사용할 관리 비밀번호"', language="toml")
+    else:
+        records_for_edit = records.sort_values(["process_date", "created_at"], ascending=False).copy()
+        labels = {
+            int(row.id): f"#{int(row.id)} · {row.process_date} · {row.operator} · O₃ {int(row.o3_cycles)} / Main {int(row.main_cycles)}"
+            for row in records_for_edit.itertuples()
+        }
+        selected_id = st.selectbox(
+            "수정하거나 삭제할 기록",
+            options=list(labels),
+            format_func=lambda value: labels[value],
+        )
+        selected_row = records_for_edit.loc[records_for_edit.id == selected_id].iloc[0]
+        with st.form("ald_shared_log_edit_form"):
+            e1, e2 = st.columns(2)
+            edit_date = e1.date_input("공정일 수정", value=pd.to_datetime(selected_row.process_date).date())
+            edit_operator = e2.text_input("작성자 수정", value=str(selected_row.operator))
+            e3, e4, e5 = st.columns(3)
+            edit_o3 = e3.number_input("O₃ cycle 횟수 수정", min_value=0, value=int(selected_row.o3_cycles), step=1)
+            edit_main = e4.number_input("Main step 횟수 수정", min_value=0, value=int(selected_row.main_cycles), step=1)
+            edit_cvg = e5.number_input("Idle CVG 수정 [Torr]", min_value=0.0, value=float(selected_row.idle_cvg), step=0.0001, format="%.5f")
+            existing_note = "" if pd.isna(selected_row.get("note")) else str(selected_row.get("note"))
+            edit_note = st.text_input("메모 수정", value=existing_note)
+            edit_password = st.text_input("관리 비밀번호", type="password")
+            update_submitted = st.form_submit_button("선택 기록 수정")
+        if update_submitted:
+            if not hmac.compare_digest(edit_password, configured_password):
+                st.error("관리 비밀번호가 올바르지 않습니다.")
+            elif not edit_operator.strip():
+                st.error("작성자를 입력해 주세요.")
+            else:
+                try:
+                    update_shared_log(selected_id, {
+                        "process_date": str(edit_date), "operator": edit_operator.strip(),
+                        "o3_cycles": int(edit_o3), "main_cycles": int(edit_main),
+                        "idle_cvg": float(edit_cvg), "note": edit_note.strip(),
+                    })
+                    st.success("선택한 기록을 수정했습니다.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+
+        with st.expander("선택 기록 삭제", expanded=False):
+            st.warning("삭제한 기록은 앱에서 복구할 수 없습니다.")
+            delete_confirmed = st.checkbox("선택한 기록을 영구 삭제하겠습니다.", key=f"delete_confirm_{selected_id}")
+            delete_password = st.text_input("삭제 관리 비밀번호", type="password", key=f"delete_password_{selected_id}")
+            if st.button("선택 기록 삭제", type="secondary", disabled=not delete_confirmed):
+                if not hmac.compare_digest(delete_password, configured_password):
+                    st.error("관리 비밀번호가 올바르지 않습니다.")
+                else:
+                    try:
+                        delete_shared_log(selected_id)
+                        st.success("선택한 기록을 삭제했습니다.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+
+        with st.expander("Supabase 수정·삭제 권한 SQL 보기"):
+            st.code('''drop policy if exists "lab update" on public.ald_run_log;
+drop policy if exists "lab delete" on public.ald_run_log;
+create policy "lab update" on public.ald_run_log
+  for update to anon using (true) with check (true);
+create policy "lab delete" on public.ald_run_log
+  for delete to anon using (true);''', language="sql")
     st.download_button("공동 로그 CSV 다운로드", records.to_csv(index=False).encode("utf-8-sig"), "ald_shared_log.csv", "text/csv")
 
 
@@ -482,7 +575,7 @@ def log_tab():
     process_figure = process_plot(df, boundaries, tma_summary, show_cycles, cycle_every, main_cycle_s, o3_cycle_s)
     st.plotly_chart(process_figure, use_container_width=True)
     st.markdown("#### TMA pulse 응답 분석")
-    st.caption("각 Main cycle 시작 직전 baseline 구간의 평균과 TMA pulse 구간 평균의 차이(ΔP)를 계산합니다. ΔP ≤ 0.01 Torr는 TMA 공급 응답 저하로 표시합니다.")
+    st.caption("각 Main cycle의 TMA pulse peak와 pulse 직전 baseline 구간 평균의 차이(ΔP)를 계산합니다. ΔP ≤ 0.01 Torr는 TMA 공급 응답 저하로 표시합니다.")
     st.plotly_chart(tma_delta_plot(tma_summary, settings["tma_delta_limit"]), use_container_width=True)
 
     tabs = st.tabs(["Step 요약", "Cycle 요약", "TMA pulse 분석", "업로드 로그 전체 TMA 수명"])
