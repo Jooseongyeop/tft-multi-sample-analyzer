@@ -102,5 +102,24 @@ class TmaCycleAnalysisTests(unittest.TestCase):
     def test_top_summary_omits_first_replacement_metric(self):
         source = PAGE_PATH.read_text(encoding="utf-8")
         self.assertNotIn('c4.metric("TMA 교체 필요 시작"', source)
+    def test_extract_log_core_handles_large_log_in_one_vectorized_pass(self):
+        header = [
+            "Process Name : performance test",
+            "Layer Start : 1 Layer End : 1 Total Layer : 1",
+            "2026-01-01 00:00:00:000\tPre-process Start ",
+            "2026-01-01 00:00:00:000\tBTorr\tState",
+        ]
+        rows = []
+        for index in range(20_000):
+            seconds, milliseconds = divmod(index * 200, 1000)
+            hour, remainder = divmod(seconds, 3600)
+            minute, second = divmod(remainder, 60)
+            rows.append(f"2026-01-01 {hour:02d}:{minute:02d}:{second:02d}:{milliseconds:03d}\t3.00E-01\t1")
+
+        df, metadata = ALD.extract_log_core("\n".join(header + rows).encode())
+
+        self.assertEqual(len(df), 20_000)
+        self.assertEqual(metadata["total_layer"], 1)
+        self.assertAlmostEqual(float(df.BTorr.iloc[-1]), 0.3)
 if __name__ == "__main__":
     unittest.main()
