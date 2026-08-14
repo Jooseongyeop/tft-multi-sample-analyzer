@@ -105,6 +105,7 @@ delta-P = TMA pulse peak - baseline mean
 ```
 
 The process plot overlays the per-cycle pre-pulse baseline as a red line and each detected TMA maximum as an orange marker; hover shows peak, baseline, and delta-P together.
+To prevent long-run timing drift, the analyzer detects the large Main-O3 peaks first and searches backward by the configured TMA-to-O3 interval for each corresponding small TMA peak.
 
 A cycle is marked for TMA replacement review when `delta-P <= 0.01 Torr` by default. This is a process-monitoring rule, not a standalone proof that the TMA source is exhausted; confirm valve operation, line temperature, pressure sensor condition, and recipe timing before replacement.
 

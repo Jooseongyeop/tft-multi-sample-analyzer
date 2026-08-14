@@ -39,6 +39,18 @@ class TmaCycleAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(result.iloc[0].pressure_delta_btorr, 0.018)
         self.assertFalse(bool(result.iloc[0].replacement_needed))
 
+    def test_o3_synchronization_selects_small_tma_peaks(self):
+        settings = dict(self.settings)
+        settings["tma_search_tolerance_s"] = 0.5
+        df = pd.DataFrame({
+            "elapsed_s": [0.5, 1.0, 1.5, 3.5, 4.0, 4.5, 6.5, 7.0, 7.5, 9.5, 10.0, 10.5],
+            "BTorr": [0.300, 0.350, 0.310, 0.310, 0.700, 0.400,
+                      0.300, 0.340, 0.310, 0.310, 0.710, 0.400],
+        })
+        result = ALD.analyze_tma_cycles(df, 1.0, 2, settings)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result.tma_peak_btorr.round(3).tolist(), [0.350, 0.340])
+        self.assertTrue((result.detection_method == "O3-synchronized local peak").all())
     def test_process_plot_shows_baseline_and_tma_peak(self):
         df = pd.DataFrame({
             "elapsed_time": pd.to_datetime([0.0, 1.0], unit="s", origin="2000-01-01"),

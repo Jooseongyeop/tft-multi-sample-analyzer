@@ -107,32 +107,111 @@ def infer_cycle_counts(raw: bytes, settings: dict) -> dict:
 
 
 def analyze_tma_cycles(df: pd.DataFrame, main_start_s: float, main_cycles: int, settings: dict) -> pd.DataFrame:
-    cycle_s = sum(settings[key] for key in ("tma_pulse_s", "tma_purge_s", "main_o3_pulse_s", "main_o3_purge_s"))
-    baseline_window_s = float(settings.get("baseline_window_s", 3.0))
-    rows = []
-    for cycle in range(1, main_cycles + 1):
-        start = main_start_s + (cycle - 1) * cycle_s
-        pulse_end = start + settings["tma_pulse_s"]
-        baseline = df[(df.elapsed_s >= start - baseline_window_s) & (df.elapsed_s < start)].BTorr
-        pulse = df[(df.elapsed_s >= start) & (df.elapsed_s < pulse_end)].BTorr
-        if baseline.empty or pulse.empty:
-            continue
-        baseline_mean = float(baseline.mean())
-        pulse_peak = float(pulse.max())
-        peak_time_s = float(df.loc[pulse.idxmax(), "elapsed_s"])
-        delta = pulse_peak - baseline_mean
-        rows.append({
-            "main_cycle": cycle,
-            "cycle_start_s": start,
-            "baseline_time_s": start,
-            "tma_peak_time_s": peak_time_s,
-            "baseline_mean_btorr": baseline_mean,
-            "tma_peak_btorr": pulse_peak,
-            "pressure_delta_btorr": delta,
-            "replacement_needed": bool(delta <= settings["tma_delta_limit"]),
-        })
-    return pd.DataFrame(rows)
+    """Compare each small TMA peak with its immediately preceding local baseline.
 
+    Large Main-O3 peaks are detected first. For every detected O3 peak, the expected
+    TMA position is found by moving backward by the TMA-purge interval, so sampling
+    and cycle-duration drift do not accumulate across a long run.
+    """
+    cycle_s = sum(settings[key] for key in ("tma_pulse_s", "tma_purge_s", "main_o3_pulse_s", "main_o3_purge_s"))
+    main_end_s = main_start_s + main_cycles * cycle_s
+    baseline_window_s = float(settings.get("baseline_window_s", 3.0))
+    search_tolerance_s = float(settings.get("tma_search_tolerance_s", 3.0))
+    main_data = df[(df.elapsed_s >= main_start_s) & (df.elapsed_s < main_end_s)].copy()
+    if main_data.empty:
+        return pd.DataFrame()
+
+    low_level = low_fraction_mean(main_data.BTorr, 0.20)
+    high_level = float(main_data.BTorr.quantile(0.98))
+    o3_threshold = low_level + 0.55 * max(0.0, high_level - low_level)
+    high_mask = main_data.BTorr >= o3_threshold
+    segment_id = high_mask.ne(high_mask.shift(fill_value=False)).cumsum()
+    o3_peak_indices = []
+    for _, segment in main_data[high_mask].groupby(segment_id[high_mask]):
+        if not segment.empty:
+            o3_peak_indices.append(segment.BTorr.idxmax())
+
+    # Remove duplicate high segments that are too close to belong to separate cycles.
+    o3_peak_indices = sorted(o3_peak_indices, key=lambda index: float(df.loc[index, "elapsed_s"]))
+    filtered_o3_indices = []
+    for index in o3_peak_indices:
+        peak_time = float(df.loc[index, "elapsed_s"])
+        if not filtered_o3_indices or peak_time - float(df.loc[filtered_o3_indices[-1], "elapsed_s"]) >= cycle_s * 0.45:
+            filtered_o3_indices.append(index)
+        elif float(df.loc[index, "BTorr"]) > float(df.loc[filtered_o3_indices[-1], "BTorr"]):
+            filtered_o3_indices[-1] = index
+    o3_peak_indices = filtered_o3_indices[:main_cycles]
+
+    rows = []
+    minimum_o3_peaks = max(2, math.ceil(main_cycles * 0.50))
+    if len(o3_peak_indices) >= minimum_o3_peaks:
+        for cycle, o3_index in enumerate(o3_peak_indices, start=1):
+            o3_peak_time_s = float(df.loc[o3_index, "elapsed_s"])
+            # O3 begins after TMA pulse + N2 purge 1. Search around that relative position.
+            expected_tma_s = o3_peak_time_s - (settings["tma_purge_s"] + settings["tma_pulse_s"])
+            candidate = main_data[
+                (main_data.elapsed_s >= expected_tma_s - search_tolerance_s)
+                & (main_data.elapsed_s <= expected_tma_s + search_tolerance_s)
+            ]
+            if candidate.empty:
+                continue
+            tma_index = candidate.BTorr.idxmax()
+            tma_peak_time_s = float(df.loc[tma_index, "elapsed_s"])
+            tma_peak = float(df.loc[tma_index, "BTorr"])
+            baseline = df[
+                (df.elapsed_s >= tma_peak_time_s - baseline_window_s)
+                & (df.elapsed_s < tma_peak_time_s)
+            ].BTorr
+            if baseline.empty:
+                continue
+            baseline_value = float(baseline.mean())
+            delta = tma_peak - baseline_value
+            rows.append({
+                "main_cycle": cycle,
+                "cycle_start_s": expected_tma_s,
+                "baseline_time_s": tma_peak_time_s,
+                "tma_peak_time_s": tma_peak_time_s,
+                "o3_peak_time_s": o3_peak_time_s,
+                "baseline_mean_btorr": baseline_value,
+                "tma_peak_btorr": tma_peak,
+                "pressure_delta_btorr": delta,
+                "replacement_needed": bool(delta <= settings["tma_delta_limit"]),
+                "detection_method": "O3-synchronized local peak",
+            })
+    else:
+        # Fallback for logs without a clearly separable O3 response.
+        for cycle in range(1, main_cycles + 1):
+            expected_tma_s = main_start_s + (cycle - 1) * cycle_s
+            candidate = main_data[
+                (main_data.elapsed_s >= expected_tma_s - search_tolerance_s)
+                & (main_data.elapsed_s <= expected_tma_s + search_tolerance_s)
+            ]
+            if candidate.empty:
+                continue
+            tma_index = candidate.BTorr.idxmax()
+            tma_peak_time_s = float(df.loc[tma_index, "elapsed_s"])
+            tma_peak = float(df.loc[tma_index, "BTorr"])
+            baseline = df[
+                (df.elapsed_s >= tma_peak_time_s - baseline_window_s)
+                & (df.elapsed_s < tma_peak_time_s)
+            ].BTorr
+            if baseline.empty:
+                continue
+            baseline_value = float(baseline.mean())
+            delta = tma_peak - baseline_value
+            rows.append({
+                "main_cycle": cycle,
+                "cycle_start_s": expected_tma_s,
+                "baseline_time_s": tma_peak_time_s,
+                "tma_peak_time_s": tma_peak_time_s,
+                "o3_peak_time_s": np.nan,
+                "baseline_mean_btorr": baseline_value,
+                "tma_peak_btorr": tma_peak,
+                "pressure_delta_btorr": delta,
+                "replacement_needed": bool(delta <= settings["tma_delta_limit"]),
+                "detection_method": "recipe-time fallback",
+            })
+    return pd.DataFrame(rows)
 
 def parse_ald_log(raw: bytes, filename: str, settings: dict):
     df, header = extract_log_core(raw)
@@ -567,6 +646,7 @@ def recipe_settings_panel(defaults: dict) -> dict:
             "post_delay_s": c4.number_input("Post delay", value=float(defaults["post_delay_s"])),
             "baseline_window_s": c1.number_input("TMA baseline 평균 구간 [s]", value=float(defaults["baseline_window_s"]), min_value=0.1),
             "tma_delta_limit": c2.number_input("TMA 교체 기준 ΔP [Torr]", value=float(defaults["tma_delta_limit"]), min_value=0.0, step=0.001, format="%.3f"),
+            "tma_search_tolerance_s": c3.number_input("TMA peak 탐색 허용오차 [s]", value=float(defaults["tma_search_tolerance_s"]), min_value=0.5, step=0.5),
             "auto_cycles": auto_cycles,
             "boundary_tolerance_s": 5.0,
         }
@@ -576,7 +656,7 @@ def recipe_settings_panel(defaults: dict) -> dict:
 def log_tab():
     st.subheader("ALD 공정 로그 자동 정리 · Step Plot")
     files = st.file_uploader("ALD 공정 로그 TXT 업로드", type=["txt", "log"], accept_multiple_files=True)
-    defaults = {"pre_delay_s": 60.0, "pre_flow_s": 120.0, "o3_pulse_s": 50.0, "o3_purge_s": 10.0, "o3_cycles": 30, "tma_pulse_s": 0.5, "tma_purge_s": 20.0, "main_o3_pulse_s": 5.0, "main_o3_purge_s": 20.0, "main_cycles": 101, "post_flow_s": 120.0, "post_delay_s": 60.0, "baseline_window_s": 3.0, "tma_delta_limit": 0.01}
+    defaults = {"pre_delay_s": 60.0, "pre_flow_s": 120.0, "o3_pulse_s": 50.0, "o3_purge_s": 10.0, "o3_cycles": 30, "tma_pulse_s": 0.5, "tma_purge_s": 20.0, "main_o3_pulse_s": 5.0, "main_o3_purge_s": 20.0, "main_cycles": 101, "post_flow_s": 120.0, "post_delay_s": 60.0, "baseline_window_s": 3.0, "tma_delta_limit": 0.01, "tma_search_tolerance_s": 3.0}
     settings = recipe_settings_panel(defaults)
     if not files:
         st.info("로그를 업로드하면 O₃/Main cycle을 자동 계산하고, TMA pulse 응답과 교체 필요 구간을 분석합니다.")
