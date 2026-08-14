@@ -105,3 +105,20 @@ delta-P = TMA pulse mean - baseline mean
 ```
 
 A cycle is marked for TMA replacement review when `delta-P <= 0.01 Torr` by default. This is a process-monitoring rule, not a standalone proof that the TMA source is exhausted; confirm valve operation, line temperature, pressure sensor condition, and recipe timing before replacement.
+
+### Editing and deleting shared ALD log records
+
+Shared records can be edited or deleted from the ALD shared-log tab after two one-time administrator steps:
+
+1. Run the UPDATE/DELETE policy SQL displayed in the app's management expander.
+2. Add an edit password inside the existing Streamlit secret section:
+
+```toml
+[ald_shared_log]
+url = "https://YOUR_PROJECT.supabase.co"
+key = "YOUR_PUBLISHABLE_KEY"
+table = "ald_run_log"
+edit_password = "YOUR_LAB_ADMIN_PASSWORD"
+```
+
+The password is stored only in Streamlit Secrets and must not be committed to GitHub. Deletion requires both the password and an explicit confirmation checkbox. The app also accepts a Supabase URL accidentally copied with a trailing `/rest/v1` and normalizes it automatically.
