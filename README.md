@@ -70,3 +70,38 @@ model_label = "Lab O3 oil-cycle model"
 
 - Reliability uploads can also be cleared together with one button.
 - Transfer-curve legends show one solid-line entry per sample below the plots.
+
+## ALD analyzer additions
+
+The ALD page now supports:
+
+- automatic O3-flow and Main cycle counts after log upload (`Total Layer` is used for Main cycles; O3 cycles are inferred from measured duration and recipe step times)
+- cycle-by-cycle Main-step TMA response: mean TMA-pulse pressure minus the mean pressure in the preceding baseline window
+- red marking and a separate trend plot when TMA delta-P is at or below the editable replacement threshold (default `0.01 Torr`)
+- cumulative TMA-pulse replacement estimate across all uploaded logs, ordered by process start time
+- an optional shared laboratory process log backed by a private Supabase project
+
+### Shared ALD process log setup
+
+The Streamlit server filesystem is temporary, so persistent multi-user records are stored outside GitHub. Create a private Supabase project, run the SQL shown in the app under **ALD Process Log > 공동 공정 로그 > 관리자 설정 방법**, then add this to Streamlit Community Cloud **App settings > Secrets**:
+
+```toml
+[ald_shared_log]
+url = "https://YOUR_PROJECT.supabase.co"
+key = "YOUR_ANON_KEY"
+table = "ald_run_log"
+```
+
+Do not commit real Supabase keys or raw laboratory logs to GitHub. The table records process date, operator, O3 cycles, Main cycles, idle CVG, and an optional note. The app displays cumulative O3/Main cycles across all saved rows.
+
+### TMA calculation definition
+
+For each Main cycle:
+
+```text
+baseline mean = average BTorr during the configurable window immediately before TMA pulse
+TMA pulse mean = average BTorr during the configured TMA pulse interval
+delta-P = TMA pulse mean - baseline mean
+```
+
+A cycle is marked for TMA replacement review when `delta-P <= 0.01 Torr` by default. This is a process-monitoring rule, not a standalone proof that the TMA source is exhausted; confirm valve operation, line temperature, pressure sensor condition, and recipe timing before replacement.
