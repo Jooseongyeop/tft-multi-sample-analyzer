@@ -538,13 +538,6 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
                         except Exception as exc:
                             st.error(str(exc))
 
-            with st.expander("Supabase 수정·삭제 권한 SQL 보기"):
-                st.code('''drop policy if exists "lab update" on public.ald_run_log;
-    drop policy if exists "lab delete" on public.ald_run_log;
-    create policy "lab update" on public.ald_run_log
-      for update to anon using (true) with check (true);
-    create policy "lab delete" on public.ald_run_log
-      for delete to anon using (true);''', language="sql")
     st.download_button("공동 로그 CSV 다운로드", records.to_csv(index=False).encode("utf-8-sig"), "ald_shared_log.csv", "text/csv")
 
 

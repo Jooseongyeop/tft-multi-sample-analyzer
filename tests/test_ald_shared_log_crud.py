@@ -28,5 +28,6 @@ class SharedLogCrudTests(unittest.TestCase):
         page_path = Path(__file__).resolve().parents[1] / "pages" / "2_ALD_Process_Log.py"
         source = page_path.read_text(encoding="utf-8")
         self.assertIn('with st.expander("기록 수정 · 삭제", expanded=False):', source)
+        self.assertNotIn('Supabase 수정·삭제 권한 SQL 보기', source)
 if __name__ == "__main__":
     unittest.main()
