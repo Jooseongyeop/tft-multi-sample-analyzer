@@ -62,28 +62,31 @@ def extract_log_core(raw: bytes) -> tuple[pd.DataFrame, dict]:
     if header_index is None or pd.isna(metadata["process_start"]):
         raise ValueError("BTorr 실시간 데이터 헤더 또는 공정 시작 시각을 찾지 못했습니다.")
 
-    records = []
+    timestamp_values = []
+    btorr_values = []
     for line in lines[header_index + 1 :]:
         if not re.match(r"^\d{4}-\d{2}-\d{2}", line):
             continue
         parts = line.split("\t")
         if len(parts) < 2:
             continue
-        timestamp = parse_timestamp(parts[0].strip())
-        btorr = pd.to_numeric(parts[1], errors="coerce")
-        if pd.notna(timestamp) and pd.notna(btorr):
-            records.append((timestamp, float(btorr)))
-    if not records:
+        timestamp_values.append(parts[0].strip())
+        btorr_values.append(parts[1].strip())
+    if not timestamp_values:
         raise ValueError("실제 측정 BTorr 행을 찾지 못했습니다.")
 
-    df = pd.DataFrame(records, columns=["timestamp", "BTorr"])
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(timestamp_values, format="%Y-%m-%d %H:%M:%S:%f", errors="coerce"),
+        "BTorr": pd.to_numeric(btorr_values, errors="coerce"),
+    }).dropna()
     df["elapsed_s"] = (df.timestamp - metadata["process_start"]).dt.total_seconds()
     df = df[df.elapsed_s >= 0].reset_index(drop=True)
     return df, metadata
 
 
-def infer_cycle_counts(raw: bytes, settings: dict) -> dict:
-    df, header = extract_log_core(raw)
+def infer_cycle_counts(raw: bytes, settings: dict, df=None, header=None) -> dict:
+    if df is None or header is None:
+        df, header = extract_log_core(raw)
     total_duration = float(df.elapsed_s.max())
     main_cycle_s = sum(settings[key] for key in ("tma_pulse_s", "tma_purge_s", "main_o3_pulse_s", "main_o3_purge_s"))
     o3_cycle_s = settings["o3_pulse_s"] + settings["o3_purge_s"]
@@ -226,7 +229,7 @@ def analyze_tma_cycles(df: pd.DataFrame, main_start_s: float, main_cycles: int, 
     return pd.DataFrame(rows)
 def parse_ald_log(raw: bytes, filename: str, settings: dict):
     df, header = extract_log_core(raw)
-    inferred = infer_cycle_counts(raw, settings)
+    inferred = infer_cycle_counts(raw, settings, df=df, header=header)
     o3_cycles = inferred["o3_cycles"] if settings.get("auto_cycles", True) else int(settings["o3_cycles"])
     main_cycles = inferred["main_cycles"] if settings.get("auto_cycles", True) else int(settings["main_cycles"])
 
@@ -776,7 +779,10 @@ def log_tab():
     cumulative = 0
     for file in files:
         try:
-            _, _, _, summary, meta, _, _, _ = parse_ald_log(file.getvalue(), file.name, settings)
+            if file.name == selected_file.name:
+                summary, meta = tma_summary, metadata
+            else:
+                _, _, _, summary, meta, _, _, _ = parse_ald_log(file.getvalue(), file.name, settings)
             first_failure = int(summary.loc[summary.replacement_needed, "main_cycle"].iloc[0]) if not summary.empty and summary.replacement_needed.any() else None
             history_rows.append({"process_start": meta["process_start"], "file": file.name, "main_cycles": meta["main_cycles_used"], "first_failure_in_file": first_failure})
         except Exception:
