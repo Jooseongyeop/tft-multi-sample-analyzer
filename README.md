@@ -94,6 +94,8 @@ table = "ald_run_log"
 
 Do not commit real Supabase keys or raw laboratory logs to GitHub. The table records process date, operator, O3 cycles, Main cycles, idle CVG, and an optional note. The app displays cumulative O3/Main cycles across all saved rows.
 
+For a pump-oil replacement, save an **오일 교체 · 누적 초기화** record instead of deleting earlier rows. The app keeps the complete lifetime history in Supabase and restarts the displayed O3/Main cumulative counts from the most recent oil-change marker. Hard delete is reserved only for incorrectly entered records.
+
 ### TMA calculation definition
 
 For each Main cycle:
