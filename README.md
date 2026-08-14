@@ -94,6 +94,8 @@ table = "ald_run_log"
 
 Do not commit real Supabase keys or raw laboratory logs to GitHub. The table records process date, operator, O3 cycles, Main cycles, idle CVG, and an optional note. The app displays cumulative O3/Main cycles across all saved rows.
 
+For a pump-oil replacement, save an **오일 교체 · 누적 초기화** record instead of deleting earlier rows. The app keeps the complete lifetime history in Supabase and restarts the displayed O3/Main cumulative counts from the most recent oil-change marker. Hard delete is reserved only for incorrectly entered records.
+
 ### TMA calculation definition
 
 For each Main cycle:
@@ -109,6 +111,8 @@ The process plot overlays the per-cycle pre-pulse baseline as a red line and eac
 A cycle is marked for TMA replacement review when `delta-P <= 0.01 Torr` by default. This is a process-monitoring rule, not a standalone proof that the TMA source is exhausted; confirm valve operation, line temperature, pressure sensor condition, and recipe timing before replacement.
 
 ### Editing and deleting shared ALD log records
+
+The **기록 수정 · 삭제** panel is collapsed by default so the shared log table remains easy to scan; expand it only when a record needs maintenance.
 
 Shared records can be edited or deleted from the ALD shared-log tab after two one-time administrator steps:
 

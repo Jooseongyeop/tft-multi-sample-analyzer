@@ -378,6 +378,52 @@ def shared_log_edit_password() -> str:
     except Exception:
         return ""
 
+OIL_CHANGE_MARKER = "[OIL_CHANGE_RESET]"
+
+
+def clean_shared_log_note(note) -> str:
+    if note is None or pd.isna(note):
+        return ""
+    return str(note).replace(OIL_CHANGE_MARKER, "").strip()
+
+
+def is_oil_change_record(note) -> bool:
+    return OIL_CHANGE_MARKER in str(note or "")
+
+
+def build_shared_log_note(note, oil_change: bool) -> str:
+    clean_note = clean_shared_log_note(note)
+    if oil_change:
+        return f"{OIL_CHANGE_MARKER} {clean_note}".strip()
+    return clean_note
+
+
+def calculate_shared_log_totals(records: pd.DataFrame) -> dict:
+    ordered = records.copy()
+    sort_columns = [column for column in ("process_date", "created_at", "id") if column in ordered]
+    if sort_columns:
+        ordered = ordered.sort_values(sort_columns).reset_index(drop=True)
+    lifetime_o3 = int(pd.to_numeric(ordered.get("o3_cycles", 0), errors="coerce").fillna(0).sum())
+    lifetime_main = int(pd.to_numeric(ordered.get("main_cycles", 0), errors="coerce").fillna(0).sum())
+    reset_mask = ordered.get("note", pd.Series("", index=ordered.index)).apply(is_oil_change_record)
+    if reset_mask.any():
+        last_reset_position = int(reset_mask[reset_mask].index[-1])
+        current = ordered.iloc[last_reset_position + 1:]
+        last_reset = ordered.iloc[last_reset_position]
+    else:
+        current = ordered
+        last_reset = None
+    current_o3 = int(pd.to_numeric(current.get("o3_cycles", 0), errors="coerce").fillna(0).sum())
+    current_main = int(pd.to_numeric(current.get("main_cycles", 0), errors="coerce").fillna(0).sum())
+    return {
+        "current_o3": current_o3,
+        "current_main": current_main,
+        "lifetime_o3": lifetime_o3,
+        "lifetime_main": lifetime_main,
+        "last_reset": last_reset,
+    }
+
+
 def predictor_tab():
     st.subheader("현재 CVG로 남은 O₃ 공정 횟수 추정")
     positive, model_label = load_private_slopes()
@@ -442,14 +488,29 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
         main_cycles = c4.number_input("Main step 횟수", min_value=0, value=0, step=1)
         idle_cvg = c5.number_input("현재 idle CVG [Torr]", min_value=0.0, value=0.0050, step=0.0001, format="%.5f")
         note = st.text_input("메모(선택)")
+        oil_change_reset = st.checkbox(
+            "펌프 오일 교체 기록 · 이 시점부터 O₃/Main 누적을 0으로 초기화",
+            help="기존 공정 기록은 삭제되지 않습니다. 이 행은 새 누적 구간의 시작점으로 저장됩니다.",
+        )
         submitted = st.form_submit_button("공정 기록 저장", type="primary")
     if submitted:
         if not operator.strip():
             st.error("작성자를 입력해 주세요.")
         else:
             try:
-                add_shared_log({"process_date": str(process_date), "operator": operator.strip(), "o3_cycles": int(o3_cycles), "main_cycles": int(main_cycles), "idle_cvg": float(idle_cvg), "note": note.strip()})
-                st.success("공정 기록을 저장했습니다.")
+                payload = {
+                    "process_date": str(process_date),
+                    "operator": operator.strip(),
+                    "o3_cycles": 0 if oil_change_reset else int(o3_cycles),
+                    "main_cycles": 0 if oil_change_reset else int(main_cycles),
+                    "idle_cvg": float(idle_cvg),
+                    "note": build_shared_log_note(note, oil_change_reset),
+                }
+                add_shared_log(payload)
+                if oil_change_reset:
+                    st.success("오일 교체 기록을 저장했습니다. 기존 이력은 보존되고 새 누적 구간이 시작됩니다.")
+                else:
+                    st.success("공정 기록을 저장했습니다.")
                 st.rerun()
             except Exception as exc:
                 st.error(str(exc))
@@ -461,90 +522,102 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
     if records.empty:
         st.info("아직 저장된 공정 기록이 없습니다.")
         return
+    totals = calculate_shared_log_totals(records)
     m1, m2, m3 = st.columns(3)
-    m1.metric("누적 O₃ cycles", f"{int(records.o3_cycles.sum()):,}")
-    m2.metric("누적 Main cycles", f"{int(records.main_cycles.sum()):,}")
+    m1.metric("최근 오일 교체 이후 O₃ cycles", f"{totals['current_o3']:,}")
+    m2.metric("최근 오일 교체 이후 Main cycles", f"{totals['current_main']:,}")
     m3.metric("최근 idle CVG", f"{float(records.idle_cvg.iloc[-1]):.5f} Torr")
-    display = records[[column for column in ["process_date", "operator", "o3_cycles", "main_cycles", "idle_cvg", "note", "created_at"] if column in records]].copy()
-    display.rename(columns={"process_date": "공정일", "operator": "작성자", "o3_cycles": "O₃ cycles", "main_cycles": "Main cycles", "idle_cvg": "Idle CVG [Torr]", "note": "메모", "created_at": "저장 시각"}, inplace=True)
-    st.dataframe(display.sort_index(ascending=False), use_container_width=True, hide_index=True)
-    st.markdown("#### 기록 수정 · 삭제")
-    configured_password = shared_log_edit_password()
-    if not configured_password:
-        st.warning("수정·삭제 관리 비밀번호가 아직 설정되지 않았습니다.")
-        with st.expander("관리자 초기 설정: UPDATE/DELETE 권한과 비밀번호"):
-            st.markdown("Supabase SQL Editor에서 아래 SQL을 한 번 실행하세요.")
-            st.code('''drop policy if exists "lab update" on public.ald_run_log;
-drop policy if exists "lab delete" on public.ald_run_log;
-create policy "lab update" on public.ald_run_log
-  for update to anon using (true) with check (true);
-create policy "lab delete" on public.ald_run_log
-  for delete to anon using (true);''', language="sql")
-            st.markdown("그다음 Streamlit Secrets의 `[ald_shared_log]` 아래에 관리 비밀번호를 추가하세요.")
-            st.code('edit_password = "연구실에서 사용할 관리 비밀번호"', language="toml")
+    if totals["last_reset"] is None:
+        st.caption(f"아직 오일 교체 기준점이 없습니다. 전체 누적: O₃ {totals['lifetime_o3']:,} cycles · Main {totals['lifetime_main']:,} cycles")
     else:
-        records_for_edit = records.sort_values(["process_date", "created_at"], ascending=False).copy()
-        labels = {
-            int(row.id): f"#{int(row.id)} · {row.process_date} · {row.operator} · O₃ {int(row.o3_cycles)} / Main {int(row.main_cycles)}"
-            for row in records_for_edit.itertuples()
-        }
-        selected_id = st.selectbox(
-            "수정하거나 삭제할 기록",
-            options=list(labels),
-            format_func=lambda value: labels[value],
+        reset = totals["last_reset"]
+        st.caption(
+            f"최근 오일 교체: {reset.get('process_date', '-')} · {reset.get('operator', '-')} | "
+            f"전체 보존 이력: O₃ {totals['lifetime_o3']:,} cycles · Main {totals['lifetime_main']:,} cycles"
         )
-        selected_row = records_for_edit.loc[records_for_edit.id == selected_id].iloc[0]
-        with st.form("ald_shared_log_edit_form"):
-            e1, e2 = st.columns(2)
-            edit_date = e1.date_input("공정일 수정", value=pd.to_datetime(selected_row.process_date).date())
-            edit_operator = e2.text_input("작성자 수정", value=str(selected_row.operator))
-            e3, e4, e5 = st.columns(3)
-            edit_o3 = e3.number_input("O₃ cycle 횟수 수정", min_value=0, value=int(selected_row.o3_cycles), step=1)
-            edit_main = e4.number_input("Main step 횟수 수정", min_value=0, value=int(selected_row.main_cycles), step=1)
-            edit_cvg = e5.number_input("Idle CVG 수정 [Torr]", min_value=0.0, value=float(selected_row.idle_cvg), step=0.0001, format="%.5f")
-            existing_note = "" if pd.isna(selected_row.get("note")) else str(selected_row.get("note"))
-            edit_note = st.text_input("메모 수정", value=existing_note)
-            edit_password = st.text_input("관리 비밀번호", type="password")
-            update_submitted = st.form_submit_button("선택 기록 수정")
-        if update_submitted:
-            if not hmac.compare_digest(edit_password, configured_password):
-                st.error("관리 비밀번호가 올바르지 않습니다.")
-            elif not edit_operator.strip():
-                st.error("작성자를 입력해 주세요.")
-            else:
-                try:
-                    update_shared_log(selected_id, {
-                        "process_date": str(edit_date), "operator": edit_operator.strip(),
-                        "o3_cycles": int(edit_o3), "main_cycles": int(edit_main),
-                        "idle_cvg": float(edit_cvg), "note": edit_note.strip(),
-                    })
-                    st.success("선택한 기록을 수정했습니다.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(str(exc))
-
-        with st.expander("선택 기록 삭제", expanded=False):
-            st.warning("삭제한 기록은 앱에서 복구할 수 없습니다.")
-            delete_confirmed = st.checkbox("선택한 기록을 영구 삭제하겠습니다.", key=f"delete_confirm_{selected_id}")
-            delete_password = st.text_input("삭제 관리 비밀번호", type="password", key=f"delete_password_{selected_id}")
-            if st.button("선택 기록 삭제", type="secondary", disabled=not delete_confirmed):
-                if not hmac.compare_digest(delete_password, configured_password):
+    display = records[[column for column in ["process_date", "operator", "o3_cycles", "main_cycles", "idle_cvg", "note", "created_at"] if column in records]].copy()
+    display.insert(2, "record_type", display.get("note", pd.Series("", index=display.index)).apply(lambda value: "오일 교체 · 누적 초기화" if is_oil_change_record(value) else "공정"))
+    if "note" in display:
+        display["note"] = display["note"].apply(clean_shared_log_note)
+    display.rename(columns={"process_date": "공정일", "operator": "작성자", "record_type": "기록 유형", "o3_cycles": "O₃ cycles", "main_cycles": "Main cycles", "idle_cvg": "Idle CVG [Torr]", "note": "메모", "created_at": "저장 시각"}, inplace=True)
+    st.dataframe(display.sort_index(ascending=False), use_container_width=True, hide_index=True)
+    with st.expander("기록 수정 · 삭제", expanded=False):
+        configured_password = shared_log_edit_password()
+        if not configured_password:
+            st.warning("수정·삭제 관리 비밀번호가 아직 설정되지 않았습니다.")
+            with st.expander("관리자 초기 설정: UPDATE/DELETE 권한과 비밀번호"):
+                st.markdown("Supabase SQL Editor에서 아래 SQL을 한 번 실행하세요.")
+                st.code('''drop policy if exists "lab update" on public.ald_run_log;
+    drop policy if exists "lab delete" on public.ald_run_log;
+    create policy "lab update" on public.ald_run_log
+      for update to anon using (true) with check (true);
+    create policy "lab delete" on public.ald_run_log
+      for delete to anon using (true);''', language="sql")
+                st.markdown("그다음 Streamlit Secrets의 `[ald_shared_log]` 아래에 관리 비밀번호를 추가하세요.")
+                st.code('edit_password = "연구실에서 사용할 관리 비밀번호"', language="toml")
+        else:
+            records_for_edit = records.sort_values(["process_date", "created_at"], ascending=False).copy()
+            labels = {
+                int(row.id): f"#{int(row.id)} · {row.process_date} · {row.operator} · {'오일 교체' if is_oil_change_record(row.note) else '공정'} · O₃ {int(row.o3_cycles)} / Main {int(row.main_cycles)}"
+                for row in records_for_edit.itertuples()
+            }
+            selected_id = st.selectbox(
+                "수정하거나 삭제할 기록",
+                options=list(labels),
+                format_func=lambda value: labels[value],
+            )
+            selected_row = records_for_edit.loc[records_for_edit.id == selected_id].iloc[0]
+            with st.form("ald_shared_log_edit_form"):
+                e1, e2 = st.columns(2)
+                edit_date = e1.date_input("공정일 수정", value=pd.to_datetime(selected_row.process_date).date())
+                edit_operator = e2.text_input("작성자 수정", value=str(selected_row.operator))
+                e3, e4, e5 = st.columns(3)
+                edit_o3 = e3.number_input("O₃ cycle 횟수 수정", min_value=0, value=int(selected_row.o3_cycles), step=1)
+                edit_main = e4.number_input("Main step 횟수 수정", min_value=0, value=int(selected_row.main_cycles), step=1)
+                edit_cvg = e5.number_input("Idle CVG 수정 [Torr]", min_value=0.0, value=float(selected_row.idle_cvg), step=0.0001, format="%.5f")
+                existing_note = clean_shared_log_note(selected_row.get("note"))
+                edit_note = st.text_input("메모 수정", value=existing_note)
+                edit_oil_change = st.checkbox(
+                    "오일 교체 · 누적 초기화 기록",
+                    value=is_oil_change_record(selected_row.get("note")),
+                    help="선택하면 이 기록 이후부터 누적값을 새로 계산합니다. 이전 기록은 삭제되지 않습니다.",
+                )
+                edit_password = st.text_input("관리 비밀번호", type="password")
+                update_submitted = st.form_submit_button("선택 기록 수정")
+            if update_submitted:
+                if not hmac.compare_digest(edit_password, configured_password):
                     st.error("관리 비밀번호가 올바르지 않습니다.")
+                elif not edit_operator.strip():
+                    st.error("작성자를 입력해 주세요.")
                 else:
                     try:
-                        delete_shared_log(selected_id)
-                        st.success("선택한 기록을 삭제했습니다.")
+                        update_shared_log(selected_id, {
+                            "process_date": str(edit_date), "operator": edit_operator.strip(),
+                            "o3_cycles": 0 if edit_oil_change else int(edit_o3),
+                            "main_cycles": 0 if edit_oil_change else int(edit_main),
+                            "idle_cvg": float(edit_cvg),
+                            "note": build_shared_log_note(edit_note, edit_oil_change),
+                        })
+                        st.success("선택한 기록을 수정했습니다.")
                         st.rerun()
                     except Exception as exc:
                         st.error(str(exc))
 
-        with st.expander("Supabase 수정·삭제 권한 SQL 보기"):
-            st.code('''drop policy if exists "lab update" on public.ald_run_log;
-drop policy if exists "lab delete" on public.ald_run_log;
-create policy "lab update" on public.ald_run_log
-  for update to anon using (true) with check (true);
-create policy "lab delete" on public.ald_run_log
-  for delete to anon using (true);''', language="sql")
+            with st.expander("잘못 입력한 기록 삭제", expanded=False):
+                st.warning("누적 초기화에는 삭제를 사용하지 마세요. 잘못 입력한 기록만 삭제하며, 삭제 후에는 복구할 수 없습니다.")
+                delete_confirmed = st.checkbox("선택한 기록을 영구 삭제하겠습니다.", key=f"delete_confirm_{selected_id}")
+                delete_password = st.text_input("삭제 관리 비밀번호", type="password", key=f"delete_password_{selected_id}")
+                if st.button("선택 기록 삭제", type="secondary", disabled=not delete_confirmed):
+                    if not hmac.compare_digest(delete_password, configured_password):
+                        st.error("관리 비밀번호가 올바르지 않습니다.")
+                    else:
+                        try:
+                            delete_shared_log(selected_id)
+                            st.success("선택한 기록을 삭제했습니다.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(str(exc))
+
     st.download_button("공동 로그 CSV 다운로드", records.to_csv(index=False).encode("utf-8-sig"), "ald_shared_log.csv", "text/csv")
 
 
