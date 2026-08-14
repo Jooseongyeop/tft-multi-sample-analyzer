@@ -24,5 +24,9 @@ class SharedLogCrudTests(unittest.TestCase):
         request.assert_called_once_with("DELETE", "?id=eq.7")
 
 
+    def test_management_panel_is_collapsed_by_default(self):
+        page_path = Path(__file__).resolve().parents[1] / "pages" / "2_ALD_Process_Log.py"
+        source = page_path.read_text(encoding="utf-8")
+        self.assertIn('with st.expander("기록 수정 · 삭제", expanded=False):', source)
 if __name__ == "__main__":
     unittest.main()

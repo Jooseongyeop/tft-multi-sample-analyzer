@@ -110,6 +110,8 @@ A cycle is marked for TMA replacement review when `delta-P <= 0.01 Torr` by defa
 
 ### Editing and deleting shared ALD log records
 
+The **기록 수정 · 삭제** panel is collapsed by default so the shared log table remains easy to scan; expand it only when a record needs maintenance.
+
 Shared records can be edited or deleted from the ALD shared-log tab after two one-time administrator steps:
 
 1. Run the UPDATE/DELETE policy SQL displayed in the app's management expander.
