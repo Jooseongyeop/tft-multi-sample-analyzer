@@ -149,5 +149,6 @@ The password is stored only in Streamlit Secrets and must not be committed to Gi
 - The ALD automatic process plot accepts `.txt` files only.
 - Recipe settings and analysis controls appear only after every uploaded file contains the exact `FMDL_Al2O3-O3` marker.
 - If one or more files fail validation, the app rejects the analysis and lists each rejected filename and reason.
+- The shared process-log UI and downloaded CSV expose cycle counts as `A step` and `B step`; existing Supabase column names remain unchanged for compatibility.
 
 The recipe marker is a file-format and accidental-upload guard. It is not user authentication; restrict access to the Streamlit app separately if stronger confidentiality is required.

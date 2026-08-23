@@ -785,6 +785,11 @@ def calculate_shared_log_totals(records: pd.DataFrame) -> dict:
     }
 
 
+def prepare_shared_log_download(records: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with lab-facing A/B step names for CSV export."""
+    return records.rename(columns={"o3_cycles": "A step", "main_cycles": "B step"}).copy()
+
+
 def predictor_tab():
     st.subheader("현재 CVG로 남은 O₃ 공정 횟수 추정")
     positive, model_label = load_private_slopes()
@@ -845,12 +850,12 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
         process_date = c1.date_input("공정일", value=date.today())
         operator = c2.text_input("작성자")
         c3, c4, c5 = st.columns(3)
-        o3_cycles = c3.number_input("O₃ cycle 횟수", min_value=0, value=0, step=1)
-        main_cycles = c4.number_input("Main step 횟수", min_value=0, value=0, step=1)
+        o3_cycles = c3.number_input("A step 횟수", min_value=0, value=0, step=1)
+        main_cycles = c4.number_input("B step 횟수", min_value=0, value=0, step=1)
         idle_cvg = c5.number_input("현재 idle CVG [Torr]", min_value=0.0, value=0.0050, step=0.0001, format="%.5f")
         note = st.text_input("메모(선택)")
         oil_change_reset = st.checkbox(
-            "펌프 오일 교체 기록 · 이 시점부터 O₃/Main 누적을 0으로 초기화",
+            "펌프 오일 교체 기록 · 이 시점부터 A/B step 누적을 0으로 초기화",
             help="기존 공정 기록은 삭제되지 않습니다. 이 행은 새 누적 구간의 시작점으로 저장됩니다.",
         )
         submitted = st.form_submit_button("공정 기록 저장", type="primary")
@@ -885,22 +890,22 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
         return
     totals = calculate_shared_log_totals(records)
     m1, m2, m3 = st.columns(3)
-    m1.metric("최근 오일 교체 이후 O₃ cycles", f"{totals['current_o3']:,}")
-    m2.metric("최근 오일 교체 이후 Main cycles", f"{totals['current_main']:,}")
+    m1.metric("최근 오일 교체 이후 A step", f"{totals['current_o3']:,}")
+    m2.metric("최근 오일 교체 이후 B step", f"{totals['current_main']:,}")
     m3.metric("최근 idle CVG", f"{float(records.idle_cvg.iloc[-1]):.5f} Torr")
     if totals["last_reset"] is None:
-        st.caption(f"아직 오일 교체 기준점이 없습니다. 전체 누적: O₃ {totals['lifetime_o3']:,} cycles · Main {totals['lifetime_main']:,} cycles")
+        st.caption(f"아직 오일 교체 기준점이 없습니다. 전체 누적: A step {totals['lifetime_o3']:,} · B step {totals['lifetime_main']:,}")
     else:
         reset = totals["last_reset"]
         st.caption(
             f"최근 오일 교체: {reset.get('process_date', '-')} · {reset.get('operator', '-')} | "
-            f"전체 보존 이력: O₃ {totals['lifetime_o3']:,} cycles · Main {totals['lifetime_main']:,} cycles"
+            f"전체 보존 이력: A step {totals['lifetime_o3']:,} · B step {totals['lifetime_main']:,}"
         )
     display = records[[column for column in ["process_date", "operator", "o3_cycles", "main_cycles", "idle_cvg", "note", "created_at"] if column in records]].copy()
     display.insert(2, "record_type", display.get("note", pd.Series("", index=display.index)).apply(lambda value: "오일 교체 · 누적 초기화" if is_oil_change_record(value) else "공정"))
     if "note" in display:
         display["note"] = display["note"].apply(clean_shared_log_note)
-    display.rename(columns={"process_date": "공정일", "operator": "작성자", "record_type": "기록 유형", "o3_cycles": "O₃ cycles", "main_cycles": "Main cycles", "idle_cvg": "Idle CVG [Torr]", "note": "메모", "created_at": "저장 시각"}, inplace=True)
+    display.rename(columns={"process_date": "공정일", "operator": "작성자", "record_type": "기록 유형", "o3_cycles": "A step", "main_cycles": "B step", "idle_cvg": "Idle CVG [Torr]", "note": "메모", "created_at": "저장 시각"}, inplace=True)
     st.dataframe(display.sort_index(ascending=False), use_container_width=True, hide_index=True)
     with st.expander("기록 수정 · 삭제", expanded=False):
         configured_password = shared_log_edit_password()
@@ -919,7 +924,7 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
         else:
             records_for_edit = records.sort_values(["process_date", "created_at"], ascending=False).copy()
             labels = {
-                int(row.id): f"#{int(row.id)} · {row.process_date} · {row.operator} · {'오일 교체' if is_oil_change_record(row.note) else '공정'} · O₃ {int(row.o3_cycles)} / Main {int(row.main_cycles)}"
+                int(row.id): f"#{int(row.id)} · {row.process_date} · {row.operator} · {'오일 교체' if is_oil_change_record(row.note) else '공정'} · A step {int(row.o3_cycles)} / B step {int(row.main_cycles)}"
                 for row in records_for_edit.itertuples()
             }
             selected_id = st.selectbox(
@@ -933,8 +938,8 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
                 edit_date = e1.date_input("공정일 수정", value=pd.to_datetime(selected_row.process_date).date())
                 edit_operator = e2.text_input("작성자 수정", value=str(selected_row.operator))
                 e3, e4, e5 = st.columns(3)
-                edit_o3 = e3.number_input("O₃ cycle 횟수 수정", min_value=0, value=int(selected_row.o3_cycles), step=1)
-                edit_main = e4.number_input("Main step 횟수 수정", min_value=0, value=int(selected_row.main_cycles), step=1)
+                edit_o3 = e3.number_input("A step 횟수 수정", min_value=0, value=int(selected_row.o3_cycles), step=1)
+                edit_main = e4.number_input("B step 횟수 수정", min_value=0, value=int(selected_row.main_cycles), step=1)
                 edit_cvg = e5.number_input("Idle CVG 수정 [Torr]", min_value=0.0, value=float(selected_row.idle_cvg), step=0.0001, format="%.5f")
                 existing_note = clean_shared_log_note(selected_row.get("note"))
                 edit_note = st.text_input("메모 수정", value=existing_note)
@@ -979,7 +984,8 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
                         except Exception as exc:
                             st.error(str(exc))
 
-    st.download_button("공동 로그 CSV 다운로드", records.to_csv(index=False).encode("utf-8-sig"), "ald_shared_log.csv", "text/csv")
+    download_records = prepare_shared_log_download(records)
+    st.download_button("공동 로그 CSV 다운로드", download_records.to_csv(index=False).encode("utf-8-sig"), "ald_shared_log.csv", "text/csv")
 
 
 def recipe_settings_panel(defaults: dict) -> dict:
