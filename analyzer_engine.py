@@ -15,6 +15,11 @@ APP_VARIANT = "4F"
 APP_TITLE = "TFT Multi-Sample Analyzer - 4F Probe"
 PREFER_B1500 = False
 PRESENTATION_SIGNIFICANT_DIGITS = 5
+VARIATION_METRICS = {
+    "Vth [V]": "Vth",
+    "Mobility max [cm2/Vs]": "FEM",
+    "Max |Ig| [A]": "GI leakage",
+}
 
 
 @dataclass
@@ -217,11 +222,109 @@ def copy_safe_summary_table(summary):
         "Mobility max [cm2/Vs]",
         "Vth [V]",
         "SS [mV/dec]",
+        "Max |Ig| [A]",
     ):
         if column in result:
             result[column] = result[column].map(format_significant)
     return result
 
+
+def device_variation_analysis(summary, iqr_multiplier=1.5):
+    """Calculate process spread and flag devices outside the box-plot rule."""
+    device_columns = ["Sample", *VARIATION_METRICS]
+    if summary.empty:
+        return pd.DataFrame(), pd.DataFrame(columns=device_columns)
+
+    devices = summary[[column for column in device_columns if column in summary]].copy()
+    stats_rows = []
+    outlier_columns = []
+    for metric, label in VARIATION_METRICS.items():
+        values = pd.to_numeric(summary.get(metric), errors="coerce")
+        valid = values.dropna()
+        count = int(valid.count())
+        mean = float(valid.mean()) if count else np.nan
+        std = float(valid.std(ddof=1)) if count >= 2 else np.nan
+        cv = abs(std / mean) * 100.0 if np.isfinite(std) and mean != 0 else np.nan
+        q1 = float(valid.quantile(0.25)) if count else np.nan
+        median = float(valid.median()) if count else np.nan
+        q3 = float(valid.quantile(0.75)) if count else np.nan
+        iqr = q3 - q1 if count else np.nan
+        lower = q1 - iqr_multiplier * iqr if count else np.nan
+        upper = q3 + iqr_multiplier * iqr if count else np.nan
+        reliable = count >= 4
+        if reliable:
+            is_outlier = values.notna() & ((values < lower) | (values > upper))
+        else:
+            is_outlier = pd.Series(False, index=summary.index)
+        status_column = f"{label} 판정"
+        outlier_columns.append(status_column)
+        devices[status_column] = np.where(
+            values.isna(),
+            "측정값 없음",
+            np.where(is_outlier, "산포 이탈", "정상 범위" if reliable else "판정 보류"),
+        )
+        stats_rows.append({
+            "지표": label,
+            "유효 소자 수": count,
+            "평균": mean,
+            "표준편차": std,
+            "CV [%]": cv,
+            "중앙값": median,
+            "Q1": q1,
+            "Q3": q3,
+            "IQR": iqr,
+            "하한 (Q1-1.5IQR)": lower,
+            "상한 (Q3+1.5IQR)": upper,
+            "산포 이탈 소자 수": int(is_outlier.sum()),
+            "판정 가능": reliable,
+        })
+    devices["종합 판정"] = np.where(
+        devices[outlier_columns].eq("산포 이탈").any(axis=1),
+        "확인 필요",
+        "정상/판정 보류",
+    )
+    return pd.DataFrame(stats_rows), devices
+
+
+def plot_device_variation(summary, variation_stats):
+    figure, axes = plt.subplots(1, 3, figsize=(14, 4.8))
+    stats_by_label = variation_stats.set_index("지표") if not variation_stats.empty else pd.DataFrame()
+    for axis, (metric, label) in zip(axes, VARIATION_METRICS.items()):
+        values = pd.to_numeric(summary[metric], errors="coerce")
+        valid = values.dropna()
+        if valid.empty:
+            axis.text(0.5, 0.5, "No valid data", ha="center", va="center")
+            axis.set_axis_off()
+            continue
+        axis.boxplot(valid, vert=True, widths=0.35, showfliers=False)
+        jitter = np.linspace(-0.08, 0.08, len(valid)) if len(valid) > 1 else np.array([0.0])
+        colors = []
+        for index in valid.index:
+            status = stats_by_label.loc[label] if label in stats_by_label.index else None
+            outlier = bool(
+                status is not None
+                and status["판정 가능"]
+                and (
+                    values.loc[index] < status["하한 (Q1-1.5IQR)"]
+                    or values.loc[index] > status["상한 (Q3+1.5IQR)"]
+                )
+            )
+            colors.append("#D62728" if outlier else "#2B6CB0")
+            if outlier:
+                axis.annotate(
+                    str(summary.loc[index, "Sample"]),
+                    (1.0, values.loc[index]),
+                    xytext=(7, 0), textcoords="offset points", fontsize=8,
+                )
+        axis.scatter(np.ones(len(valid)) + jitter, valid, c=colors, s=35, zorder=3)
+        axis.set_xticks([1], [label])
+        axis.set_ylabel(metric)
+        axis.grid(True, axis="y", alpha=0.25)
+        if metric == "Max |Ig| [A]" and (valid > 0).all():
+            axis.set_yscale("log")
+    figure.suptitle("Device variation · red = outside 1.5×IQR")
+    figure.tight_layout()
+    return figure
 
 def split_vg_segments(frame):
     if len(frame) < 3:
@@ -344,7 +447,10 @@ def safe_sheet_name(index, name):
     return f"P{index:02d}_{clean}"[:31]
 
 
-def workbook_bytes(summary, processed, iv_items, ig_items, mobility_items, errors):
+def workbook_bytes(
+    summary, processed, iv_items, ig_items, mobility_items, errors,
+    variation_stats=None, variation_devices=None,
+):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name="Summary", index=False)
@@ -360,6 +466,10 @@ def workbook_bytes(summary, processed, iv_items, ig_items, mobility_items, error
         merge_origin_columns(mobility_items, "Mobility_cm2_Vs").to_excel(
             writer, sheet_name="Mobility(FEM)", index=False
         )
+        if variation_stats is not None and not variation_stats.empty:
+            variation_stats.to_excel(writer, sheet_name="Variation_Stats", index=False)
+        if variation_devices is not None and not variation_devices.empty:
+            variation_devices.to_excel(writer, sheet_name="Variation_Devices", index=False)
         if errors:
             pd.DataFrame(errors).to_excel(writer, sheet_name="Errors", index=False)
     return output.getvalue()
@@ -479,6 +589,7 @@ def main(configure_page=True):
             errors.append({"Sample": name, "Stage": "Analysis", "Error": str(exc)})
 
     summary = pd.DataFrame(summary_rows)
+    variation_stats, variation_devices = device_variation_analysis(summary)
     st.subheader("All-sample summary")
     if len(summary):
         st.dataframe(
@@ -497,6 +608,24 @@ def main(configure_page=True):
         )
     else:
         st.error("No files were analyzed successfully.")
+
+    if len(summary):
+        st.subheader("공정 산포 분석")
+        st.caption(
+            "Vd=0.1 V 기준 Vth, FEM, max |Ig|의 평균·표준편차·CV를 계산합니다. "
+            "Box Plot의 1.5×IQR 범위를 벗어난 소자는 산포 이탈로 표시합니다."
+        )
+        if len(summary) < 4:
+            st.warning("유효 소자가 4개 미만이라 이상치 판정은 보류합니다. 산포 통계는 참고용으로만 확인하세요.")
+        st.dataframe(variation_stats, hide_index=True, use_container_width=True)
+        flagged = variation_devices[variation_devices["종합 판정"] == "확인 필요"]
+        if flagged.empty:
+            st.success("1.5×IQR 기준으로 확인이 필요한 산포 이탈 소자가 없습니다.")
+        else:
+            st.error("산포 이탈 확인 필요: " + ", ".join(flagged["Sample"].astype(str)))
+        st.pyplot(plot_device_variation(summary, variation_stats), clear_figure=True)
+        with st.expander("소자별 산포 판정표"):
+            st.dataframe(variation_devices, hide_index=True, use_container_width=True)
 
     if errors:
         with st.expander(f"Items requiring review ({len(errors)})", expanded=True):
@@ -520,7 +649,10 @@ def main(configure_page=True):
                 view = merge_origin_columns(mobility_items, "Mobility_cm2_Vs")
             st.dataframe(view, use_container_width=True)
 
-        excel = workbook_bytes(summary, processed, iv_items, ig_items, mobility_items, errors)
+        excel = workbook_bytes(
+            summary, processed, iv_items, ig_items, mobility_items, errors,
+            variation_stats, variation_devices,
+        )
         st.download_button(
             "Download all results and Origin-ready Excel",
             excel,

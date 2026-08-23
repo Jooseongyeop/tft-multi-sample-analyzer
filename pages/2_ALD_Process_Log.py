@@ -16,6 +16,48 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+PECVD_320C_REFERENCE = pd.DataFrame({
+    "SiH4 [sccm]": [20.0, 35.0, 35.0, 175.0],
+    "N2O [sccm]": [1000.0, 1000.0, 500.0, 500.0],
+    "100 nm time [s]": [733.0, 400.0, 470.0, 88.0],
+})
+PECVD_320C_REFERENCE["SiH4:N2O ratio"] = (
+    PECVD_320C_REFERENCE["SiH4 [sccm]"] / PECVD_320C_REFERENCE["N2O [sccm]"]
+)
+PECVD_320C_REFERENCE["Deposition rate [nm/s]"] = (
+    100.0 / PECVD_320C_REFERENCE["100 nm time [s]"]
+)
+
+
+def calculate_pecvd_process_time(sih4_sccm: float, n2o_sccm: float, target_nm: float) -> dict:
+    """Estimate 320 C PECVD time from the four lab calibration recipes."""
+    if sih4_sccm <= 0 or n2o_sccm <= 0 or target_nm <= 0:
+        raise ValueError("SiH4, N2O 유량과 목표 두께는 0보다 커야 합니다.")
+    ratio = float(sih4_sccm / n2o_sccm)
+    reference = PECVD_320C_REFERENCE.sort_values("SiH4:N2O ratio")
+    exact = reference[
+        np.isclose(reference["SiH4 [sccm]"], sih4_sccm)
+        & np.isclose(reference["N2O [sccm]"], n2o_sccm)
+    ]
+    if not exact.empty:
+        rate = float(exact.iloc[0]["Deposition rate [nm/s]"])
+        method = "실측 recipe"
+        extrapolated = False
+    else:
+        ratios = reference["SiH4:N2O ratio"].to_numpy(float)
+        rates = reference["Deposition rate [nm/s]"].to_numpy(float)
+        clipped = float(np.clip(ratio, ratios.min(), ratios.max()))
+        rate = float(np.interp(np.log10(clipped), np.log10(ratios), rates))
+        extrapolated = ratio < ratios.min() or ratio > ratios.max()
+        method = "보정 범위 밖 최근접값" if extrapolated else "실측점 사이 log-ratio 보간"
+    process_s = float(target_nm / rate)
+    return {
+        "ratio": ratio,
+        "deposition_rate_nm_s": rate,
+        "process_time_s": process_s,
+        "method": method,
+        "extrapolated": extrapolated,
+    }
 
 def decode_log(raw: bytes) -> str:
     for enc in ("utf-8-sig", "cp949", "euc-kr", "utf-16"):
@@ -730,6 +772,52 @@ def recipe_settings_panel(defaults: dict) -> dict:
     return values
 
 
+def pecvd_time_tab():
+    st.subheader("PECVD SiH₄:N₂O 공정시간 계산기")
+    st.caption("320 °C에서 측정한 100 nm 실측값을 기준으로 목표 두께의 공정시간을 계산합니다.")
+    c1, c2, c3 = st.columns(3)
+    sih4 = c1.number_input("SiH₄ flow [sccm]", min_value=0.1, value=35.0, step=1.0)
+    n2o = c2.number_input("N₂O flow [sccm]", min_value=0.1, value=1000.0, step=10.0)
+    target = c3.number_input("목표 두께 [nm]", min_value=0.1, value=100.0, step=10.0)
+    result = calculate_pecvd_process_time(sih4, n2o, target)
+    minutes = int(result["process_time_s"] // 60)
+    seconds = result["process_time_s"] - minutes * 60
+    m1, m2, m3 = st.columns(3)
+    m1.metric("SiH₄:N₂O 비율", f"{result['ratio']:.5f}")
+    m2.metric("예상 증착률", f"{result['deposition_rate_nm_s']:.4f} nm/s")
+    m3.metric("예상 공정시간", f"{result['process_time_s']:.1f} s", f"{minutes}분 {seconds:.1f}초")
+    if result["method"] == "실측 recipe":
+        st.success("등록된 320 °C 실측 recipe와 동일한 조건입니다.")
+    elif result["extrapolated"]:
+        st.warning("실측 비율 범위를 벗어나 최근접 실측 증착률을 사용했습니다. 실제 두께 확인 후 보정하세요.")
+    else:
+        st.info("실측점 사이의 증착률을 SiH₄:N₂O log-ratio 기준으로 보간한 추정값입니다.")
+    st.caption(
+        "절대 유량, RF power, pressure, chamber 상태에 따라서도 증착률이 달라질 수 있습니다. "
+        "이 계산기는 320 °C 실측 4점 기반의 공정 계획용 추정치이며, 신규 조건은 두께 측정으로 검증해야 합니다."
+    )
+    reference = PECVD_320C_REFERENCE.copy()
+    reference["100 nm time [min:s]"] = reference["100 nm time [s]"].map(
+        lambda value: f"{int(value // 60)}:{int(value % 60):02d}"
+    )
+    st.markdown("#### 320 °C · 100 nm 실측 기준")
+    st.dataframe(reference, hide_index=True, use_container_width=True)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=reference["SiH4:N2O ratio"], y=reference["Deposition rate [nm/s]"],
+        mode="markers+lines", name="실측 기준", marker=dict(size=10, color="#2B6CB0"),
+    ))
+    fig.add_trace(go.Scatter(
+        x=[result["ratio"]], y=[result["deposition_rate_nm_s"]],
+        mode="markers", name="입력 조건",
+        marker=dict(size=13, color="#D62728", symbol="diamond"),
+    ))
+    fig.update_layout(
+        height=380, xaxis_type="log", xaxis_title="SiH₄:N₂O flow ratio",
+        yaxis_title="Deposition rate [nm/s]",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 def log_tab():
     st.subheader("ALD 공정 로그 자동 정리 · Step Plot")
     files = st.file_uploader("ALD 공정 로그 TXT 업로드", type=["txt", "log"], accept_multiple_files=True)
@@ -806,15 +894,19 @@ def log_tab():
 
 
 def main():
-    st.title("ALD Vacuum Life & Process Log Analyzer")
-    st.caption("O₃ 공정 잔여 횟수 예측 · BTorr 로그 자동 cycle 정리 · TMA 공급 상태 분석")
-    predictor, shared, log = st.tabs(["남은 공정 횟수 예측", "공정 로그 시트", "공정 로그 자동 Plot"])
+    st.title("ALD/CVD 공정")
+    st.caption("ALD 진공 수명·공정 로그 분석 · PECVD SiH₄:N₂O 공정시간 계산")
+    predictor, shared, log, pecvd = st.tabs([
+        "남은 공정 횟수 예측", "공정 로그 시트", "공정 로그 자동 Plot", "PECVD 공정시간"
+    ])
     with predictor:
         predictor_tab()
     with shared:
         shared_log_tab()
     with log:
         log_tab()
+    with pecvd:
+        pecvd_time_tab()
 
 
 if __name__ == "__main__":

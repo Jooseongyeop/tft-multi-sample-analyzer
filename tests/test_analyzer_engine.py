@@ -116,5 +116,32 @@ class ParserTests(unittest.TestCase):
             ["sample_A"],
         )
 
+    def test_variation_analysis_flags_iqr_outlier_and_calculates_cv(self):
+        summary = pd.DataFrame({
+            "Sample": ["A", "B", "C", "D", "E"],
+            "Vth [V]": [1.0, 1.0, 1.0, 1.0, 5.0],
+            "Mobility max [cm2/Vs]": [10.0, 10.0, 10.0, 10.0, 50.0],
+            "Max |Ig| [A]": [1e-10, 1e-10, 1e-10, 1e-10, 1e-7],
+        })
+        stats, devices = analyzer.device_variation_analysis(summary)
+        self.assertTrue((stats["산포 이탈 소자 수"] == 1).all())
+        self.assertTrue((stats["CV [%]"] > 0).all())
+        self.assertEqual(
+            devices.loc[devices.Sample == "E", "종합 판정"].iloc[0],
+            "확인 필요",
+        )
+
+    def test_variation_analysis_defers_outlier_judgment_below_four_devices(self):
+        summary = pd.DataFrame({
+            "Sample": ["A", "B", "C"],
+            "Vth [V]": [1.0, 1.0, 9.0],
+            "Mobility max [cm2/Vs]": [10.0, 10.0, 90.0],
+            "Max |Ig| [A]": [1e-10, 1e-10, 1e-6],
+        })
+        stats, devices = analyzer.device_variation_analysis(summary)
+        self.assertFalse(stats["판정 가능"].any())
+        self.assertTrue((devices["Vth 판정"] == "판정 보류").all())
+        self.assertTrue((devices["종합 판정"] == "정상/판정 보류").all())
+
 if __name__ == "__main__":
     unittest.main()
