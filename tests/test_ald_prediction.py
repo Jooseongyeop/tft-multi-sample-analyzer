@@ -31,13 +31,24 @@ class ConservativePredictionTests(unittest.TestCase):
         self.assertAlmostEqual(result["process_time_s"], 1466.0)
         self.assertEqual(result["method"], "실측 recipe")
 
-    def test_pecvd_interpolates_between_measured_ratios(self):
+    def test_pecvd_interpolates_n2o_at_same_sih4(self):
         result = ALD.calculate_pecvd_process_time(35, 750, 100)
         self.assertFalse(result["extrapolated"])
-        self.assertEqual(result["method"], "누적 실측점 사이 log-ratio 보간")
+        self.assertEqual(result["method"], "동일 SiH4 조건의 N2O 보간")
         self.assertGreater(result["deposition_rate_nm_s"], 100 / 470)
         self.assertLess(result["deposition_rate_nm_s"], 100 / 400)
 
+    def test_two_dimensional_model_learns_n2o_effect_and_flags_extrapolation(self):
+        measured_175_500 = ALD.calculate_pecvd_process_time(175, 500, 100)
+        predicted_175_1000 = ALD.calculate_pecvd_process_time(175, 1000, 100)
+        self.assertLess(
+            predicted_175_1000["process_time_s"],
+            measured_175_500["process_time_s"],
+        )
+        self.assertTrue(predicted_175_1000["extrapolated"])
+        self.assertEqual(predicted_175_1000["method"], "2차원 power-law 외삽")
+        self.assertEqual(predicted_175_1000["confidence"], "낮음")
+        self.assertGreater(predicted_175_1000["model_r2"], 0.9)
     def test_new_measurement_is_used_immediately(self):
         reference = ALD.pd.concat([
             ALD.PECVD_320C_REFERENCE,
