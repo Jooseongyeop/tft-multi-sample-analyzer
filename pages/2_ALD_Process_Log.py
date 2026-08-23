@@ -29,27 +29,68 @@ PECVD_320C_REFERENCE["Deposition rate [nm/s]"] = (
 )
 
 
-def calculate_pecvd_process_time(sih4_sccm: float, n2o_sccm: float, target_nm: float) -> dict:
-    """Estimate 320 C PECVD time from the four lab calibration recipes."""
+def prepare_pecvd_reference(reference: pd.DataFrame) -> pd.DataFrame:
+    """Normalize PECVD calibration rows and derive ratio/deposition rate."""
+    required = ["SiH4 [sccm]", "N2O [sccm]", "100 nm time [s]"]
+    missing = [column for column in required if column not in reference]
+    if missing:
+        raise ValueError(f"PECVD 실측 데이터 열이 없습니다: {missing}")
+    prepared = reference.copy()
+    for column in required:
+        prepared[column] = pd.to_numeric(prepared[column], errors="coerce")
+    prepared = prepared.dropna(subset=required)
+    prepared = prepared[
+        (prepared["SiH4 [sccm]"] > 0)
+        & (prepared["N2O [sccm]"] > 0)
+        & (prepared["100 nm time [s]"] > 0)
+    ].reset_index(drop=True)
+    if prepared.empty:
+        raise ValueError("양수인 PECVD 실측 데이터가 필요합니다.")
+    if "Source" not in prepared:
+        prepared["Source"] = "실측"
+    prepared["SiH4:N2O ratio"] = prepared["SiH4 [sccm]"] / prepared["N2O [sccm]"]
+    prepared["Deposition rate [nm/s]"] = 100.0 / prepared["100 nm time [s]"]
+    return prepared
+
+
+def calculate_pecvd_process_time(
+    sih4_sccm: float,
+    n2o_sccm: float,
+    target_nm: float,
+    reference: pd.DataFrame | None = None,
+) -> dict:
+    """Estimate 320 C PECVD time from accumulated lab calibration recipes."""
     if sih4_sccm <= 0 or n2o_sccm <= 0 or target_nm <= 0:
         raise ValueError("SiH4, N2O 유량과 목표 두께는 0보다 커야 합니다.")
     ratio = float(sih4_sccm / n2o_sccm)
-    reference = PECVD_320C_REFERENCE.sort_values("SiH4:N2O ratio")
-    exact = reference[
-        np.isclose(reference["SiH4 [sccm]"], sih4_sccm)
-        & np.isclose(reference["N2O [sccm]"], n2o_sccm)
+    prepared = prepare_pecvd_reference(
+        PECVD_320C_REFERENCE if reference is None else reference
+    )
+    exact = prepared[
+        np.isclose(prepared["SiH4 [sccm]"], sih4_sccm)
+        & np.isclose(prepared["N2O [sccm]"], n2o_sccm)
     ]
     if not exact.empty:
-        rate = float(exact.iloc[0]["Deposition rate [nm/s]"])
+        rate = float(exact["Deposition rate [nm/s]"].median())
         method = "실측 recipe"
         extrapolated = False
+        matching_points = int(len(exact))
     else:
-        ratios = reference["SiH4:N2O ratio"].to_numpy(float)
-        rates = reference["Deposition rate [nm/s]"].to_numpy(float)
+        by_ratio = (
+            prepared.groupby("SiH4:N2O ratio", as_index=False)
+            .agg(**{
+                "Deposition rate [nm/s]": ("Deposition rate [nm/s]", "median"),
+                "측정 수": ("Deposition rate [nm/s]", "size"),
+            })
+            .sort_values("SiH4:N2O ratio")
+        )
+        ratios = by_ratio["SiH4:N2O ratio"].to_numpy(float)
+        rates = by_ratio["Deposition rate [nm/s]"].to_numpy(float)
         clipped = float(np.clip(ratio, ratios.min(), ratios.max()))
         rate = float(np.interp(np.log10(clipped), np.log10(ratios), rates))
         extrapolated = ratio < ratios.min() or ratio > ratios.max()
-        method = "보정 범위 밖 최근접값" if extrapolated else "실측점 사이 log-ratio 보간"
+        method = "보정 범위 밖 최근접값" if extrapolated else "누적 실측점 사이 log-ratio 보간"
+        matching_points = 0
     process_s = float(target_nm / rate)
     return {
         "ratio": ratio,
@@ -57,6 +98,8 @@ def calculate_pecvd_process_time(sih4_sccm: float, n2o_sccm: float, target_nm: f
         "process_time_s": process_s,
         "method": method,
         "extrapolated": extrapolated,
+        "matching_points": matching_points,
+        "reference_points": int(len(prepared)),
     }
 
 def decode_log(raw: bytes) -> str:
@@ -457,11 +500,12 @@ def supabase_config():
         return None
 
 
-def supabase_request(method: str, path: str, payload=None):
+def supabase_request(method: str, path: str, payload=None, table_name=None):
     config = supabase_config()
     if config is None:
         raise RuntimeError("공유 로그 DB가 아직 연결되지 않았습니다.")
-    url, key, table = config
+    url, key, default_table = config
+    table = table_name or default_table
     request_url = f"{url}/rest/v1/{table}{path}"
     headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json", "Prefer": "return=representation"}
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
@@ -475,6 +519,59 @@ def supabase_request(method: str, path: str, payload=None):
     except urllib.error.URLError as exc:
         raise RuntimeError(f"공유 로그 DB 연결 실패: {exc.reason}") from exc
 
+
+def pecvd_calibration_table_name() -> str:
+    try:
+        return str(st.secrets["ald_shared_log"].get("pecvd_table", "pecvd_calibration"))
+    except Exception:
+        return "pecvd_calibration"
+
+
+def read_shared_pecvd_reference() -> pd.DataFrame:
+    rows = supabase_request(
+        "GET", "?select=*&order=created_at.asc",
+        table_name=pecvd_calibration_table_name(),
+    )
+    if not rows:
+        return pd.DataFrame(columns=[
+            "SiH4 [sccm]", "N2O [sccm]", "100 nm time [s]", "Source", "Note"
+        ])
+    frame = pd.DataFrame(rows).rename(columns={
+        "sih4_sccm": "SiH4 [sccm]",
+        "n2o_sccm": "N2O [sccm]",
+        "time_s": "100 nm time [s]",
+        "note": "Note",
+        "created_at": "Created at",
+    })
+    frame["Source"] = "공유 DB 실측"
+    return frame
+
+
+def add_shared_pecvd_reference(payload: dict):
+    return supabase_request(
+        "POST", "", payload,
+        table_name=pecvd_calibration_table_name(),
+    )
+
+
+def load_pecvd_reference() -> tuple[pd.DataFrame, bool, str]:
+    base = PECVD_320C_REFERENCE.copy()
+    base["Source"] = "기본 실측"
+    frames = [base]
+    session_rows = st.session_state.get("pecvd_session_reference", [])
+    if session_rows:
+        frames.append(pd.DataFrame(session_rows))
+    db_ready = False
+    db_error = ""
+    if supabase_config() is not None:
+        try:
+            shared = read_shared_pecvd_reference()
+            if not shared.empty:
+                frames.append(shared)
+            db_ready = True
+        except Exception as exc:
+            db_error = str(exc)
+    return prepare_pecvd_reference(pd.concat(frames, ignore_index=True, sort=False)), db_ready, db_error
 
 def read_shared_log() -> pd.DataFrame:
     rows = supabase_request("GET", "?select=*&order=process_date.asc,created_at.asc")
@@ -774,38 +871,120 @@ def recipe_settings_panel(defaults: dict) -> dict:
 
 def pecvd_time_tab():
     st.subheader("PECVD SiH₄:N₂O 공정시간 계산기")
-    st.caption("320 °C에서 측정한 100 nm 실측값을 기준으로 목표 두께의 공정시간을 계산합니다.")
+    st.caption("320 °C · 100 nm 실측값을 계속 누적하고, 누적 데이터로 목표 두께의 공정시간을 즉시 다시 계산합니다.")
+
+    reference, db_ready, db_error = load_pecvd_reference()
+    with st.expander("PECVD 100 nm 실측 데이터 추가", expanded=False):
+        if db_ready:
+            st.success("Supabase 공유 실측 DB에 연결되었습니다. 저장한 값은 연구실 사용자에게 즉시 공유됩니다.")
+        elif db_error:
+            st.warning("PECVD 공유 테이블을 아직 사용할 수 없어 현재 브라우저 세션에만 저장합니다.")
+            st.caption(db_error)
+        else:
+            st.info("Supabase가 연결되지 않아 현재 브라우저 세션에만 저장합니다.")
+
+        with st.form("pecvd_reference_add_form", clear_on_submit=True):
+            a1, a2, a3 = st.columns(3)
+            add_sih4 = a1.number_input("실측 SiH₄ flow [sccm]", min_value=0.1, value=35.0, step=1.0)
+            add_n2o = a2.number_input("실측 N₂O flow [sccm]", min_value=0.1, value=1000.0, step=10.0)
+            add_time = a3.number_input("100 nm 증착시간 [s]", min_value=0.1, value=400.0, step=1.0)
+            add_note = st.text_input("메모(선택)", placeholder="예: ellipsometer 측정, recipe 조건")
+            add_submitted = st.form_submit_button("실측값 추가 · 계산에 반영", type="primary")
+        if add_submitted:
+            payload = {
+                "sih4_sccm": float(add_sih4),
+                "n2o_sccm": float(add_n2o),
+                "time_s": float(add_time),
+                "note": add_note.strip(),
+            }
+            if db_ready:
+                try:
+                    add_shared_pecvd_reference(payload)
+                    st.success("공유 실측값을 저장했습니다. 누적 데이터로 다시 계산합니다.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"공유 실측값 저장 실패: {exc}")
+            else:
+                st.session_state.setdefault("pecvd_session_reference", []).append({
+                    "SiH4 [sccm]": float(add_sih4),
+                    "N2O [sccm]": float(add_n2o),
+                    "100 nm time [s]": float(add_time),
+                    "Source": "현재 세션 실측",
+                    "Note": add_note.strip(),
+                })
+                st.success("현재 세션에 실측값을 추가했습니다. 누적 데이터로 다시 계산합니다.")
+                st.rerun()
+
+        if not db_ready:
+            with st.expander("Supabase 영구 저장 테이블 설정 SQL", expanded=False):
+                st.caption("기존 Supabase SQL Editor에서 아래 코드를 한 번 실행하면 이후 입력값이 영구 저장됩니다.")
+                st.code('''create table if not exists public.pecvd_calibration (
+  id bigint generated by default as identity primary key,
+  created_at timestamptz default now(),
+  sih4_sccm double precision not null check (sih4_sccm > 0),
+  n2o_sccm double precision not null check (n2o_sccm > 0),
+  time_s double precision not null check (time_s > 0),
+  note text
+);
+alter table public.pecvd_calibration enable row level security;
+drop policy if exists "pecvd lab read" on public.pecvd_calibration;
+drop policy if exists "pecvd lab insert" on public.pecvd_calibration;
+create policy "pecvd lab read" on public.pecvd_calibration
+  for select to anon using (true);
+create policy "pecvd lab insert" on public.pecvd_calibration
+  for insert to anon with check (true);''', language="sql")
+                st.caption("기본 테이블명 pecvd_calibration을 사용하므로 기존 Supabase URL·Key 외에 추가 설정은 필요하지 않습니다.")
+
     c1, c2, c3 = st.columns(3)
-    sih4 = c1.number_input("SiH₄ flow [sccm]", min_value=0.1, value=35.0, step=1.0)
-    n2o = c2.number_input("N₂O flow [sccm]", min_value=0.1, value=1000.0, step=10.0)
-    target = c3.number_input("목표 두께 [nm]", min_value=0.1, value=100.0, step=10.0)
-    result = calculate_pecvd_process_time(sih4, n2o, target)
+    sih4 = c1.number_input("SiH₄ flow [sccm]", min_value=0.1, value=35.0, step=1.0, key="pecvd_calc_sih4")
+    n2o = c2.number_input("N₂O flow [sccm]", min_value=0.1, value=1000.0, step=10.0, key="pecvd_calc_n2o")
+    target = c3.number_input("목표 두께 [nm]", min_value=0.1, value=100.0, step=10.0, key="pecvd_calc_target")
+    result = calculate_pecvd_process_time(sih4, n2o, target, reference)
     minutes = int(result["process_time_s"] // 60)
     seconds = result["process_time_s"] - minutes * 60
     m1, m2, m3 = st.columns(3)
     m1.metric("SiH₄:N₂O 비율", f"{result['ratio']:.5f}")
-    m2.metric("예상 증착률", f"{result['deposition_rate_nm_s']:.4f} nm/s")
+    m2.metric("누적 실측 기반 증착률", f"{result['deposition_rate_nm_s']:.4f} nm/s")
     m3.metric("예상 공정시간", f"{result['process_time_s']:.1f} s", f"{minutes}분 {seconds:.1f}초")
     if result["method"] == "실측 recipe":
-        st.success("등록된 320 °C 실측 recipe와 동일한 조건입니다.")
+        st.success(f"동일 유량의 실측 {result['matching_points']}개 증착률 중앙값을 적용했습니다.")
     elif result["extrapolated"]:
-        st.warning("실측 비율 범위를 벗어나 최근접 실측 증착률을 사용했습니다. 실제 두께 확인 후 보정하세요.")
+        st.warning("누적 실측 비율 범위를 벗어나 최근접 실측 증착률을 사용했습니다. 실제 두께 확인 후 보정하세요.")
     else:
-        st.info("실측점 사이의 증착률을 SiH₄:N₂O log-ratio 기준으로 보간한 추정값입니다.")
+        st.info("누적 실측점 사이의 증착률을 SiH₄:N₂O log-ratio 기준으로 보간한 추정값입니다.")
     st.caption(
-        "절대 유량, RF power, pressure, chamber 상태에 따라서도 증착률이 달라질 수 있습니다. "
-        "이 계산기는 320 °C 실측 4점 기반의 공정 계획용 추정치이며, 신규 조건은 두께 측정으로 검증해야 합니다."
+        f"현재 반영된 실측값: {result['reference_points']}개 · "
+        "동일 비율 반복 측정은 증착률 중앙값으로 통합합니다. 절대 유량, RF power, pressure, chamber 상태가 "
+        "다르면 증착률이 달라질 수 있으므로 신규 조건은 실제 두께로 검증하세요."
     )
-    reference = PECVD_320C_REFERENCE.copy()
-    reference["100 nm time [min:s]"] = reference["100 nm time [s]"].map(
-        lambda value: f"{int(value // 60)}:{int(value % 60):02d}"
+
+    display = reference.sort_values(["SiH4:N2O ratio", "SiH4 [sccm]", "N2O [sccm]"]).reset_index(drop=True)
+    display["100 nm time [min:s]"] = display["100 nm time [s]"].map(
+        lambda value: f"{int(value // 60)}:{int(round(value % 60)):02d}"
     )
-    st.markdown("#### 320 °C · 100 nm 실측 기준")
-    st.dataframe(reference, hide_index=True, use_container_width=True)
+    st.markdown("#### 320 °C · 100 nm 누적 실측 기준")
+    st.dataframe(display, hide_index=True, use_container_width=True)
+    st.download_button(
+        "PECVD 누적 실측 CSV 다운로드",
+        display.to_csv(index=False).encode("utf-8-sig"),
+        "pecvd_320C_calibration.csv", "text/csv",
+    )
+
+    plotted = (
+        reference.groupby("SiH4:N2O ratio", as_index=False)
+        .agg(**{
+            "Deposition rate [nm/s]": ("Deposition rate [nm/s]", "median"),
+            "측정 수": ("Deposition rate [nm/s]", "size"),
+        })
+        .sort_values("SiH4:N2O ratio")
+    )
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=reference["SiH4:N2O ratio"], y=reference["Deposition rate [nm/s]"],
-        mode="markers+lines", name="실측 기준", marker=dict(size=10, color="#2B6CB0"),
+        x=plotted["SiH4:N2O ratio"], y=plotted["Deposition rate [nm/s]"],
+        mode="markers+lines", name="누적 실측 중앙값",
+        marker=dict(size=8 + 2 * plotted["측정 수"], color="#2B6CB0"),
+        customdata=plotted[["측정 수"]],
+        hovertemplate="ratio=%{x:.5f}<br>rate=%{y:.5f} nm/s<br>n=%{customdata[0]}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
         x=[result["ratio"]], y=[result["deposition_rate_nm_s"]],
@@ -817,7 +996,6 @@ def pecvd_time_tab():
         yaxis_title="Deposition rate [nm/s]",
     )
     st.plotly_chart(fig, use_container_width=True)
-
 def log_tab():
     st.subheader("ALD 공정 로그 자동 정리 · Step Plot")
     files = st.file_uploader("ALD 공정 로그 TXT 업로드", type=["txt", "log"], accept_multiple_files=True)

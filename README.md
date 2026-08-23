@@ -30,7 +30,8 @@ TFT 측정 데이터와 ALD/CVD 공정 데이터를 브라우저에서 분석하
 - Q1·중앙값·Q3와 cycle별 열화 속도 Box Plot 표시
 - 여러 ALD TXT/LOG 파일의 실제 BTorr 자동 추출
 - Main step와 cycle 요약, 인터랙티브 Plot 및 Excel 생성
-- 320 °C 실측 4점 기반 SiH4:N2O 비율별 PECVD 증착률 및 목표 두께 공정시간 계산
+- 320 °C · 100 nm 실측값을 계속 추가하고, 누적 SiH4:N2O 조건으로 목표 두께 공정시간을 즉시 재계산
+- 동일 유량 조건의 반복 측정은 증착률 중앙값으로 통합하고, 다른 조건은 log-ratio 기준으로 보간
 
 ## 웹 실행
 
@@ -92,9 +93,13 @@ The Streamlit server filesystem is temporary, so persistent multi-user records a
 url = "https://YOUR_PROJECT.supabase.co"
 key = "YOUR_ANON_KEY"
 table = "ald_run_log"
+# 선택 사항이며 생략하면 아래 기본값을 사용합니다.
+pecvd_table = "pecvd_calibration"
 ```
 
 Do not commit real Supabase keys or raw laboratory logs to GitHub. The table records process date, operator, O3 cycles, Main cycles, idle CVG, and an optional note. The app displays cumulative O3/Main cycles across all saved rows.
+
+PECVD 계산기에서 **PECVD 100 nm 실측 데이터 추가**를 펼치면 SiH4 유량, N2O 유량과 100 nm 증착시간을 계속 기록할 수 있습니다. 기존 Supabase에 `pecvd_calibration` 테이블을 만드는 SQL은 화면 안에 제공됩니다. 테이블이 연결되면 연구실 사용자가 입력한 값이 공동 저장되고, 연결 전에는 현재 브라우저 세션에서 즉시 계산에만 반영됩니다.
 
 For a pump-oil replacement, save an **오일 교체 · 누적 초기화** record instead of deleting earlier rows. The app keeps the complete lifetime history in Supabase and restarts the displayed O3/Main cumulative counts from the most recent oil-change marker. Hard delete is reserved only for incorrectly entered records.
 
@@ -130,6 +135,8 @@ Shared records can be edited or deleted from the ALD shared-log tab after two on
 url = "https://YOUR_PROJECT.supabase.co"
 key = "YOUR_PUBLISHABLE_KEY"
 table = "ald_run_log"
+# 선택 사항이며 생략하면 아래 기본값을 사용합니다.
+pecvd_table = "pecvd_calibration"
 edit_password = "YOUR_LAB_ADMIN_PASSWORD"
 ```
 

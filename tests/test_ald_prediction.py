@@ -34,9 +34,32 @@ class ConservativePredictionTests(unittest.TestCase):
     def test_pecvd_interpolates_between_measured_ratios(self):
         result = ALD.calculate_pecvd_process_time(35, 750, 100)
         self.assertFalse(result["extrapolated"])
-        self.assertEqual(result["method"], "실측점 사이 log-ratio 보간")
+        self.assertEqual(result["method"], "누적 실측점 사이 log-ratio 보간")
         self.assertGreater(result["deposition_rate_nm_s"], 100 / 470)
         self.assertLess(result["deposition_rate_nm_s"], 100 / 400)
 
+    def test_new_measurement_is_used_immediately(self):
+        reference = ALD.pd.concat([
+            ALD.PECVD_320C_REFERENCE,
+            ALD.pd.DataFrame([{
+                "SiH4 [sccm]": 70.0,
+                "N2O [sccm]": 1000.0,
+                "100 nm time [s]": 250.0,
+            }]),
+        ], ignore_index=True)
+        result = ALD.calculate_pecvd_process_time(70, 1000, 100, reference)
+        self.assertAlmostEqual(result["process_time_s"], 250.0)
+        self.assertEqual(result["matching_points"], 1)
+        self.assertEqual(result["reference_points"], 5)
+
+    def test_repeated_exact_recipe_uses_median_deposition_rate(self):
+        reference = ALD.pd.DataFrame([
+            {"SiH4 [sccm]": 50.0, "N2O [sccm]": 1000.0, "100 nm time [s]": 200.0},
+            {"SiH4 [sccm]": 50.0, "N2O [sccm]": 1000.0, "100 nm time [s]": 400.0},
+        ])
+        result = ALD.calculate_pecvd_process_time(50, 1000, 100, reference)
+        self.assertAlmostEqual(result["deposition_rate_nm_s"], 0.375)
+        self.assertAlmostEqual(result["process_time_s"], 100 / 0.375)
+        self.assertEqual(result["matching_points"], 2)
 if __name__ == "__main__":
     unittest.main()
