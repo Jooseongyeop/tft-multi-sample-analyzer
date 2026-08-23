@@ -1184,9 +1184,7 @@ def log_tab():
         if not allowed:
             rejected.append({"파일": uploaded_file.name, "거부 사유": reason})
     if rejected:
-        st.error("허용되지 않은 로그가 포함되어 업로드를 거부했습니다. 아래 파일을 제거한 뒤 다시 시도해 주세요.")
-        st.dataframe(pd.DataFrame(rejected), hide_index=True, use_container_width=True)
-        st.caption("이 분석기는 파일 내용에 `FMDL_Al2O3-O3`가 포함된 TXT 로그만 허용합니다.")
+        st.error("업로드를 거부했습니다.")
         return
 
     st.success("허용된 FMDL Al₂O₃-O₃ recipe 로그를 확인했습니다.")
