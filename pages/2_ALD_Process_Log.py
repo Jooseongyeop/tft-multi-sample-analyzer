@@ -1184,7 +1184,7 @@ def log_tab():
         if not allowed:
             rejected.append({"파일": uploaded_file.name, "거부 사유": reason})
     if rejected:
-        st.error("업로드를 거부했습니다.")
+        st.error("파일명이 정확하지 않아 업로드를 거부했습니다.")
         return
 
     st.success("허용된 FMDL Al₂O₃-O₃ recipe 로그를 확인했습니다.")
