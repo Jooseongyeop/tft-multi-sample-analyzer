@@ -609,24 +609,6 @@ def main(configure_page=True):
     else:
         st.error("No files were analyzed successfully.")
 
-    if len(summary):
-        st.subheader("공정 산포 분석")
-        st.caption(
-            "Vd=0.1 V 기준 Vth, FEM, max |Ig|의 평균·표준편차·CV를 계산합니다. "
-            "Box Plot의 1.5×IQR 범위를 벗어난 소자는 산포 이탈로 표시합니다."
-        )
-        if len(summary) < 4:
-            st.warning("유효 소자가 4개 미만이라 이상치 판정은 보류합니다. 산포 통계는 참고용으로만 확인하세요.")
-        st.dataframe(variation_stats, hide_index=True, use_container_width=True)
-        flagged = variation_devices[variation_devices["종합 판정"] == "확인 필요"]
-        if flagged.empty:
-            st.success("1.5×IQR 기준으로 확인이 필요한 산포 이탈 소자가 없습니다.")
-        else:
-            st.error("산포 이탈 확인 필요: " + ", ".join(flagged["Sample"].astype(str)))
-        st.pyplot(plot_device_variation(summary, variation_stats), clear_figure=True)
-        with st.expander("소자별 산포 판정표"):
-            st.dataframe(variation_devices, hide_index=True, use_container_width=True)
-
     if errors:
         with st.expander(f"Items requiring review ({len(errors)})", expanded=True):
             st.dataframe(pd.DataFrame(errors), hide_index=True, use_container_width=True)
@@ -635,6 +617,38 @@ def main(configure_page=True):
         tabs = st.tabs(["All transfer curves", "Processed data by sample", "Origin sheet preview"])
         with tabs[0]:
             st.pyplot(plot_all(preview), clear_figure=True)
+            if len(summary):
+                with st.expander("공정 산포 분석", expanded=False):
+                    st.caption(
+                        "Vd=0.1 V 기준 Vth, FEM, max |Ig|의 평균·표준편차·CV를 계산합니다. "
+                        "Box Plot의 1.5×IQR 범위를 벗어난 소자는 산포 이탈로 표시합니다."
+                    )
+                    if len(summary) < 4:
+                        st.warning(
+                            "유효 소자가 4개 미만이라 이상치 판정은 보류합니다. "
+                            "산포 통계는 참고용으로만 확인하세요."
+                        )
+                    st.dataframe(variation_stats, hide_index=True, use_container_width=True)
+                    flagged = variation_devices[
+                        variation_devices["종합 판정"] == "확인 필요"
+                    ]
+                    if flagged.empty:
+                        st.success("1.5×IQR 기준으로 확인이 필요한 산포 이탈 소자가 없습니다.")
+                    else:
+                        st.error(
+                            "산포 이탈 확인 필요: "
+                            + ", ".join(flagged["Sample"].astype(str))
+                        )
+                    st.pyplot(
+                        plot_device_variation(summary, variation_stats),
+                        clear_figure=True,
+                    )
+                    st.markdown("##### 소자별 산포 판정표")
+                    st.dataframe(
+                        variation_devices,
+                        hide_index=True,
+                        use_container_width=True,
+                    )
         with tabs[1]:
             selected_name = st.selectbox("Select sample", [name for name, _ in processed])
             selected_frame = next(frame for name, frame in processed if name == selected_name)
