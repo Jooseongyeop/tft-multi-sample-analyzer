@@ -53,44 +53,167 @@ def prepare_pecvd_reference(reference: pd.DataFrame) -> pd.DataFrame:
     return prepared
 
 
+def _group_pecvd_recipes(prepared: pd.DataFrame) -> pd.DataFrame:
+    """Collapse repeated recipes to one robust median deposition rate."""
+    return (
+        prepared.groupby(["SiH4 [sccm]", "N2O [sccm]"], as_index=False)
+        .agg(**{
+            "Deposition rate [nm/s]": ("Deposition rate [nm/s]", "median"),
+            "측정 수": ("Deposition rate [nm/s]", "size"),
+        })
+    )
+
+
+def _convex_hull_2d(points: np.ndarray) -> np.ndarray:
+    unique = sorted(set(map(tuple, np.asarray(points, dtype=float).tolist())))
+    if len(unique) <= 1:
+        return np.asarray(unique, dtype=float)
+
+    def cross(origin, first, second):
+        return ((first[0] - origin[0]) * (second[1] - origin[1])
+                - (first[1] - origin[1]) * (second[0] - origin[0]))
+
+    lower = []
+    for point in unique:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
+            lower.pop()
+        lower.append(point)
+    upper = []
+    for point in reversed(unique):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
+            upper.pop()
+        upper.append(point)
+    return np.asarray(lower[:-1] + upper[:-1], dtype=float)
+
+
+def point_inside_pecvd_domain(grouped: pd.DataFrame, sih4_sccm: float, n2o_sccm: float) -> bool:
+    """Return whether a query lies in the measured 2-D log-flow convex hull."""
+    points = np.column_stack([
+        np.log10(grouped["SiH4 [sccm]"].to_numpy(float)),
+        np.log10(grouped["N2O [sccm]"].to_numpy(float)),
+    ])
+    hull = _convex_hull_2d(points)
+    if len(hull) < 3:
+        return False
+    query = np.array([np.log10(sih4_sccm), np.log10(n2o_sccm)], dtype=float)
+    edges = np.roll(hull, -1, axis=0) - hull
+    offsets = query - hull
+    cross_values = edges[:, 0] * offsets[:, 1] - edges[:, 1] * offsets[:, 0]
+    tolerance = 1e-12
+    return bool(np.all(cross_values >= -tolerance) or np.all(cross_values <= tolerance))
+
+
+def pecvd_idw_rate(grouped: pd.DataFrame, sih4_sccm: float, n2o_sccm: float) -> float:
+    """Fallback 2-D inverse-distance estimate in normalized log-flow space."""
+    coordinates = np.column_stack([
+        np.log10(grouped["SiH4 [sccm]"].to_numpy(float)),
+        np.log10(grouped["N2O [sccm]"].to_numpy(float)),
+    ])
+    query = np.array([np.log10(sih4_sccm), np.log10(n2o_sccm)], dtype=float)
+    scale = np.ptp(coordinates, axis=0)
+    scale[scale < 1e-12] = 1.0
+    distances = np.linalg.norm((coordinates - query) / scale, axis=1)
+    nearest = np.argsort(distances)[: min(4, len(distances))]
+    weights = 1.0 / np.maximum(distances[nearest], 1e-9) ** 2
+    rates = grouped["Deposition rate [nm/s]"].to_numpy(float)[nearest]
+    return float(np.average(rates, weights=weights))
+
+
 def calculate_pecvd_process_time(
     sih4_sccm: float,
     n2o_sccm: float,
     target_nm: float,
     reference: pd.DataFrame | None = None,
 ) -> dict:
-    """Estimate 320 C PECVD time from accumulated lab calibration recipes."""
+    """Estimate PECVD time using SiH4 and N2O as independent variables."""
     if sih4_sccm <= 0 or n2o_sccm <= 0 or target_nm <= 0:
         raise ValueError("SiH4, N2O 유량과 목표 두께는 0보다 커야 합니다.")
     ratio = float(sih4_sccm / n2o_sccm)
     prepared = prepare_pecvd_reference(
         PECVD_320C_REFERENCE if reference is None else reference
     )
+    grouped = _group_pecvd_recipes(prepared)
     exact = prepared[
         np.isclose(prepared["SiH4 [sccm]"], sih4_sccm)
         & np.isclose(prepared["N2O [sccm]"], n2o_sccm)
     ]
+    model_r2 = None
+    matching_points = 0
+
     if not exact.empty:
         rate = float(exact["Deposition rate [nm/s]"].median())
         method = "실측 recipe"
         extrapolated = False
         matching_points = int(len(exact))
+        confidence = "실측"
     else:
-        by_ratio = (
-            prepared.groupby("SiH4:N2O ratio", as_index=False)
-            .agg(**{
-                "Deposition rate [nm/s]": ("Deposition rate [nm/s]", "median"),
-                "측정 수": ("Deposition rate [nm/s]", "size"),
-            })
-            .sort_values("SiH4:N2O ratio")
-        )
-        ratios = by_ratio["SiH4:N2O ratio"].to_numpy(float)
-        rates = by_ratio["Deposition rate [nm/s]"].to_numpy(float)
-        clipped = float(np.clip(ratio, ratios.min(), ratios.max()))
-        rate = float(np.interp(np.log10(clipped), np.log10(ratios), rates))
-        extrapolated = ratio < ratios.min() or ratio > ratios.max()
-        method = "보정 범위 밖 최근접값" if extrapolated else "누적 실측점 사이 log-ratio 보간"
-        matching_points = 0
+        same_sih4 = grouped[
+            np.isclose(grouped["SiH4 [sccm]"], sih4_sccm)
+        ].sort_values("N2O [sccm]")
+        same_n2o = grouped[
+            np.isclose(grouped["N2O [sccm]"], n2o_sccm)
+        ].sort_values("SiH4 [sccm]")
+
+        if (
+            len(same_sih4) >= 2
+            and same_sih4["N2O [sccm]"].min() <= n2o_sccm
+            <= same_sih4["N2O [sccm]"].max()
+        ):
+            rate = float(10 ** np.interp(
+                np.log10(n2o_sccm),
+                np.log10(same_sih4["N2O [sccm]"].to_numpy(float)),
+                np.log10(same_sih4["Deposition rate [nm/s]"].to_numpy(float)),
+            ))
+            method = "동일 SiH4 조건의 N2O 보간"
+            extrapolated = False
+            confidence = "높음"
+        elif (
+            len(same_n2o) >= 2
+            and same_n2o["SiH4 [sccm]"].min() <= sih4_sccm
+            <= same_n2o["SiH4 [sccm]"].max()
+        ):
+            rate = float(10 ** np.interp(
+                np.log10(sih4_sccm),
+                np.log10(same_n2o["SiH4 [sccm]"].to_numpy(float)),
+                np.log10(same_n2o["Deposition rate [nm/s]"].to_numpy(float)),
+            ))
+            method = "동일 N2O 조건의 SiH4 보간"
+            extrapolated = False
+            confidence = "높음"
+        else:
+            design = np.column_stack([
+                np.ones(len(grouped)),
+                np.log10(grouped["SiH4 [sccm]"].to_numpy(float)),
+                np.log10(grouped["N2O [sccm]"].to_numpy(float)),
+            ])
+            observed = np.log10(grouped["Deposition rate [nm/s]"].to_numpy(float))
+            coefficients, _, rank, _ = np.linalg.lstsq(design, observed, rcond=None)
+            extrapolated = not point_inside_pecvd_domain(
+                grouped, sih4_sccm, n2o_sccm
+            )
+            if rank == 3:
+                query = np.array([
+                    1.0, np.log10(sih4_sccm), np.log10(n2o_sccm)
+                ])
+                rate = float(10 ** (query @ coefficients))
+                fitted = design @ coefficients
+                total = float(np.sum((observed - observed.mean()) ** 2))
+                model_r2 = (
+                    float(1 - np.sum((observed - fitted) ** 2) / total)
+                    if total > 0 else 1.0
+                )
+                method = (
+                    "2차원 power-law 외삽"
+                    if extrapolated else "2차원 power-law 보간"
+                )
+            else:
+                rate = pecvd_idw_rate(grouped, sih4_sccm, n2o_sccm)
+                method = (
+                    "2차원 근접 실측 외삽"
+                    if extrapolated else "2차원 근접 실측 보간"
+                )
+            confidence = "낮음" if extrapolated else "보통"
+
     process_s = float(target_nm / rate)
     return {
         "ratio": ratio,
@@ -100,6 +223,9 @@ def calculate_pecvd_process_time(
         "extrapolated": extrapolated,
         "matching_points": matching_points,
         "reference_points": int(len(prepared)),
+        "unique_recipes": int(len(grouped)),
+        "confidence": confidence,
+        "model_r2": model_r2,
     }
 
 def decode_log(raw: bytes) -> str:
@@ -942,23 +1068,40 @@ create policy "pecvd lab insert" on public.pecvd_calibration
     result = calculate_pecvd_process_time(sih4, n2o, target, reference)
     minutes = int(result["process_time_s"] // 60)
     seconds = result["process_time_s"] - minutes * 60
-    m1, m2, m3 = st.columns(3)
-    m1.metric("SiH₄:N₂O 비율", f"{result['ratio']:.5f}")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("참고 SiH₄:N₂O 비율", f"{result['ratio']:.5f}")
     m2.metric("누적 실측 기반 증착률", f"{result['deposition_rate_nm_s']:.4f} nm/s")
     m3.metric("예상 공정시간", f"{result['process_time_s']:.1f} s", f"{minutes}분 {seconds:.1f}초")
+    m4.metric("예측 신뢰도", result["confidence"])
     if result["method"] == "실측 recipe":
         st.success(f"동일 유량의 실측 {result['matching_points']}개 증착률 중앙값을 적용했습니다.")
     elif result["extrapolated"]:
-        st.warning("누적 실측 비율 범위를 벗어나 최근접 실측 증착률을 사용했습니다. 실제 두께 확인 후 보정하세요.")
+        st.warning(
+            "입력 조건이 현재 SiH₄-N₂O 실측 영역 밖이므로 2차원 외삽값입니다. "
+            "초기 recipe 참고용으로만 사용하고 실제 두께 측정 후 보정값을 추가하세요."
+        )
+    elif result["method"].startswith("동일"):
+        st.info(f"{result['method']}을 적용했습니다. 두 실측 조건 사이의 log-log 보간값입니다.")
     else:
-        st.info("누적 실측점 사이의 증착률을 SiH₄:N₂O log-ratio 기준으로 보간한 추정값입니다.")
-    st.caption(
-        f"현재 반영된 실측값: {result['reference_points']}개 · "
-        "동일 비율 반복 측정은 증착률 중앙값으로 통합합니다. 절대 유량, RF power, pressure, chamber 상태가 "
-        "다르면 증착률이 달라질 수 있으므로 신규 조건은 실제 두께로 검증하세요."
-    )
+        st.info("SiH₄와 N₂O 절대 유량을 각각 반영한 2차원 추정값입니다.")
 
-    display = reference.sort_values(["SiH4:N2O ratio", "SiH4 [sccm]", "N2O [sccm]"]).reset_index(drop=True)
+    model_detail = f"계산법: {result['method']}"
+    if result["model_r2"] is not None:
+        model_detail += f" · 누적 실측 2차원 모델 R²={result['model_r2']:.3f}(적합도이며 외삽 정확도는 아님)"
+    st.caption(
+        f"현재 반영된 실측값 {result['reference_points']}개 / 고유 recipe {result['unique_recipes']}개 · "
+        f"{model_detail}. 동일한 SiH₄·N₂O recipe의 반복 측정은 증착률 중앙값으로 통합합니다. "
+        "RF power, pressure, chamber 상태가 다르면 별도 보정이 필요합니다."
+    )
+    with st.expander("2차원 계산 방법", expanded=False):
+        st.markdown(
+            "1. 동일 SiH₄·N₂O 실측값이 있으면 해당 recipe의 중앙값을 사용합니다.\n"
+            "2. 한 유량이 같고 다른 유량이 실측점 사이에 있으면 해당 축으로 log-log 보간합니다.\n"
+            "3. 두 유량이 모두 다르면 `rate = k × SiH₄ᵃ × N₂Oᵇ` 형태의 2차원 power-law 모델을 사용합니다.\n"
+            "4. 실측 조건의 2차원 범위를 벗어나면 외삽·낮은 신뢰도로 표시합니다."
+        )
+
+    display = reference.sort_values(["SiH4 [sccm]", "N2O [sccm]"]).reset_index(drop=True)
     display["100 nm time [min:s]"] = display["100 nm time [s]"].map(
         lambda value: f"{int(value // 60)}:{int(round(value % 60)):02d}"
     )
@@ -970,32 +1113,43 @@ create policy "pecvd lab insert" on public.pecvd_calibration
         "pecvd_320C_calibration.csv", "text/csv",
     )
 
-    plotted = (
-        reference.groupby("SiH4:N2O ratio", as_index=False)
-        .agg(**{
-            "Deposition rate [nm/s]": ("Deposition rate [nm/s]", "median"),
-            "측정 수": ("Deposition rate [nm/s]", "size"),
-        })
-        .sort_values("SiH4:N2O ratio")
-    )
+    plotted = _group_pecvd_recipes(reference).sort_values(["SiH4 [sccm]", "N2O [sccm]"])
+    plotted["100 nm time [s]"] = 100.0 / plotted["Deposition rate [nm/s]"]
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=plotted["SiH4:N2O ratio"], y=plotted["Deposition rate [nm/s]"],
-        mode="markers+lines", name="누적 실측 중앙값",
-        marker=dict(size=8 + 2 * plotted["측정 수"], color="#2B6CB0"),
-        customdata=plotted[["측정 수"]],
-        hovertemplate="ratio=%{x:.5f}<br>rate=%{y:.5f} nm/s<br>n=%{customdata[0]}<extra></extra>",
+        x=plotted["SiH4 [sccm]"], y=plotted["N2O [sccm]"],
+        mode="markers", name="누적 실측 recipe",
+        marker=dict(
+            size=10 + 2 * plotted["측정 수"],
+            color=plotted["Deposition rate [nm/s]"],
+            colorscale="Viridis", showscale=True,
+            colorbar=dict(title="Rate<br>[nm/s]"),
+            line=dict(width=1, color="#1F2937"),
+        ),
+        customdata=plotted[["Deposition rate [nm/s]", "100 nm time [s]", "측정 수"]],
+        hovertemplate=(
+            "SiH4=%{x:.3g} sccm<br>N2O=%{y:.3g} sccm<br>"
+            "rate=%{customdata[0]:.5f} nm/s<br>100 nm=%{customdata[1]:.1f} s<br>"
+            "n=%{customdata[2]}<extra></extra>"
+        ),
     ))
     fig.add_trace(go.Scatter(
-        x=[result["ratio"]], y=[result["deposition_rate_nm_s"]],
-        mode="markers", name="입력 조건",
-        marker=dict(size=13, color="#D62728", symbol="diamond"),
+        x=[sih4], y=[n2o], mode="markers", name="입력 조건",
+        marker=dict(size=15, color="#D62728", symbol="diamond", line=dict(width=1, color="white")),
+        customdata=[[result["deposition_rate_nm_s"], result["process_time_s"], result["confidence"]]],
+        hovertemplate=(
+            "SiH4=%{x:.3g} sccm<br>N2O=%{y:.3g} sccm<br>"
+            "예상 rate=%{customdata[0]:.5f} nm/s<br>예상 시간=%{customdata[1]:.1f} s<br>"
+            "신뢰도=%{customdata[2]}<extra></extra>"
+        ),
     ))
     fig.update_layout(
-        height=380, xaxis_type="log", xaxis_title="SiH₄:N₂O flow ratio",
-        yaxis_title="Deposition rate [nm/s]",
+        height=430, xaxis_type="log", yaxis_type="log",
+        xaxis_title="SiH₄ flow [sccm]", yaxis_title="N₂O flow [sccm]",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
     st.plotly_chart(fig, use_container_width=True)
+
 def log_tab():
     st.subheader("ALD 공정 로그 자동 정리 · Step Plot")
     files = st.file_uploader("ALD 공정 로그 TXT 업로드", type=["txt", "log"], accept_multiple_files=True)
