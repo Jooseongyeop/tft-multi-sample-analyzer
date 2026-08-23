@@ -16,6 +16,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+ALD_ALLOWED_RECIPE_MARKER = b"FMDL_Al2O3-O3"
+
 PECVD_320C_REFERENCE = pd.DataFrame({
     "SiH4 [sccm]": [20.0, 35.0, 35.0, 175.0],
     "N2O [sccm]": [1000.0, 1000.0, 500.0, 500.0],
@@ -27,6 +29,17 @@ PECVD_320C_REFERENCE["SiH4:N2O ratio"] = (
 PECVD_320C_REFERENCE["Deposition rate [nm/s]"] = (
     100.0 / PECVD_320C_REFERENCE["100 nm time [s]"]
 )
+
+
+def validate_ald_log_upload(payload: bytes, filename: str) -> tuple[bool, str]:
+    """Allow only the lab Al2O3-O3 TXT recipe logs used by this analyzer."""
+    if Path(filename).suffix.lower() != ".txt":
+        return False, "TXT 파일만 업로드할 수 있습니다."
+    if not payload:
+        return False, "빈 파일은 업로드할 수 없습니다."
+    if ALD_ALLOWED_RECIPE_MARKER not in payload:
+        return False, "파일 내용에서 허용된 recipe 문구(FMDL_Al2O3-O3)를 찾지 못했습니다."
+    return True, ""
 
 
 def prepare_pecvd_reference(reference: pd.DataFrame) -> pd.DataFrame:
@@ -1106,8 +1119,9 @@ create policy "pecvd lab insert" on public.pecvd_calibration
         lambda value: f"{int(value // 60)}:{int(round(value % 60)):02d}"
     )
     st.markdown("#### 320 °C · 100 nm 누적 실측 기준")
-    st.dataframe(display, hide_index=True, use_container_width=True)
-    st.download_button(
+    reference_panel = st.expander("누적 실측 데이터·그래프 보기", expanded=False)
+    reference_panel.dataframe(display, hide_index=True, use_container_width=True)
+    reference_panel.download_button(
         "PECVD 누적 실측 CSV 다운로드",
         display.to_csv(index=False).encode("utf-8-sig"),
         "pecvd_320C_calibration.csv", "text/csv",
@@ -1148,16 +1162,29 @@ create policy "pecvd lab insert" on public.pecvd_calibration
         xaxis_title="SiH₄ flow [sccm]", yaxis_title="N₂O flow [sccm]",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    reference_panel.plotly_chart(fig, use_container_width=True)
 
 def log_tab():
     st.subheader("ALD 공정 로그 자동 정리 · Step Plot")
-    files = st.file_uploader("ALD 공정 로그 TXT 업로드", type=["txt", "log"], accept_multiple_files=True)
+    files = st.file_uploader("ALD 공정 로그 TXT 업로드", type=["txt"], accept_multiple_files=True)
     defaults = {"pre_delay_s": 60.0, "pre_flow_s": 120.0, "o3_pulse_s": 50.0, "o3_purge_s": 10.0, "o3_cycles": 30, "tma_pulse_s": 0.5, "tma_purge_s": 20.0, "main_o3_pulse_s": 5.0, "main_o3_purge_s": 20.0, "main_cycles": 101, "post_flow_s": 120.0, "post_delay_s": 60.0, "baseline_window_s": 3.0, "tma_delta_limit": 0.01, "tma_search_tolerance_s": 6.0}
-    settings = recipe_settings_panel(defaults)
     if not files:
-        st.info("로그를 업로드하면 O₃/Main cycle을 자동 계산하고, TMA pulse 응답과 교체 필요 구간을 분석합니다.")
+        st.info("허용된 ALD recipe TXT 로그를 업로드하면 Recipe 시간 설정과 분석 기능이 표시됩니다.")
         return
+
+    rejected = []
+    for uploaded_file in files:
+        allowed, reason = validate_ald_log_upload(uploaded_file.getvalue(), uploaded_file.name)
+        if not allowed:
+            rejected.append({"파일": uploaded_file.name, "거부 사유": reason})
+    if rejected:
+        st.error("허용되지 않은 로그가 포함되어 업로드를 거부했습니다. 아래 파일을 제거한 뒤 다시 시도해 주세요.")
+        st.dataframe(pd.DataFrame(rejected), hide_index=True, use_container_width=True)
+        st.caption("이 분석기는 파일 내용에 `FMDL_Al2O3-O3`가 포함된 TXT 로그만 허용합니다.")
+        return
+
+    st.success("허용된 FMDL Al₂O₃-O₃ recipe 로그를 확인했습니다.")
+    settings = recipe_settings_panel(defaults)
 
     names = [file.name for file in files]
     selected = st.selectbox("화면에 표시할 로그", names)
