@@ -16,6 +16,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+ALD_ALLOWED_RECIPE_MARKER = b"FMDL_Al2O3-O3"
+
 PECVD_320C_REFERENCE = pd.DataFrame({
     "SiH4 [sccm]": [20.0, 35.0, 35.0, 175.0],
     "N2O [sccm]": [1000.0, 1000.0, 500.0, 500.0],
@@ -27,6 +29,17 @@ PECVD_320C_REFERENCE["SiH4:N2O ratio"] = (
 PECVD_320C_REFERENCE["Deposition rate [nm/s]"] = (
     100.0 / PECVD_320C_REFERENCE["100 nm time [s]"]
 )
+
+
+def validate_ald_log_upload(payload: bytes, filename: str) -> tuple[bool, str]:
+    """Allow only the lab Al2O3-O3 TXT recipe logs used by this analyzer."""
+    if Path(filename).suffix.lower() != ".txt":
+        return False, "TXT 파일만 업로드할 수 있습니다."
+    if not payload:
+        return False, "빈 파일은 업로드할 수 없습니다."
+    if ALD_ALLOWED_RECIPE_MARKER not in payload:
+        return False, "파일 내용에서 허용된 recipe 문구(FMDL_Al2O3-O3)를 찾지 못했습니다."
+    return True, ""
 
 
 def prepare_pecvd_reference(reference: pd.DataFrame) -> pd.DataFrame:
@@ -772,6 +785,11 @@ def calculate_shared_log_totals(records: pd.DataFrame) -> dict:
     }
 
 
+def prepare_shared_log_download(records: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with lab-facing A/B step names for CSV export."""
+    return records.rename(columns={"o3_cycles": "A step", "main_cycles": "B step"}).copy()
+
+
 def predictor_tab():
     st.subheader("현재 CVG로 남은 O₃ 공정 횟수 추정")
     positive, model_label = load_private_slopes()
@@ -832,12 +850,12 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
         process_date = c1.date_input("공정일", value=date.today())
         operator = c2.text_input("작성자")
         c3, c4, c5 = st.columns(3)
-        o3_cycles = c3.number_input("O₃ cycle 횟수", min_value=0, value=0, step=1)
-        main_cycles = c4.number_input("Main step 횟수", min_value=0, value=0, step=1)
+        o3_cycles = c3.number_input("A step 횟수", min_value=0, value=0, step=1)
+        main_cycles = c4.number_input("B step 횟수", min_value=0, value=0, step=1)
         idle_cvg = c5.number_input("현재 idle CVG [Torr]", min_value=0.0, value=0.0050, step=0.0001, format="%.5f")
         note = st.text_input("메모(선택)")
         oil_change_reset = st.checkbox(
-            "펌프 오일 교체 기록 · 이 시점부터 O₃/Main 누적을 0으로 초기화",
+            "펌프 오일 교체 기록 · 이 시점부터 A/B step 누적을 0으로 초기화",
             help="기존 공정 기록은 삭제되지 않습니다. 이 행은 새 누적 구간의 시작점으로 저장됩니다.",
         )
         submitted = st.form_submit_button("공정 기록 저장", type="primary")
@@ -872,22 +890,22 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
         return
     totals = calculate_shared_log_totals(records)
     m1, m2, m3 = st.columns(3)
-    m1.metric("최근 오일 교체 이후 O₃ cycles", f"{totals['current_o3']:,}")
-    m2.metric("최근 오일 교체 이후 Main cycles", f"{totals['current_main']:,}")
+    m1.metric("최근 오일 교체 이후 A step", f"{totals['current_o3']:,}")
+    m2.metric("최근 오일 교체 이후 B step", f"{totals['current_main']:,}")
     m3.metric("최근 idle CVG", f"{float(records.idle_cvg.iloc[-1]):.5f} Torr")
     if totals["last_reset"] is None:
-        st.caption(f"아직 오일 교체 기준점이 없습니다. 전체 누적: O₃ {totals['lifetime_o3']:,} cycles · Main {totals['lifetime_main']:,} cycles")
+        st.caption(f"아직 오일 교체 기준점이 없습니다. 전체 누적: A step {totals['lifetime_o3']:,} · B step {totals['lifetime_main']:,}")
     else:
         reset = totals["last_reset"]
         st.caption(
             f"최근 오일 교체: {reset.get('process_date', '-')} · {reset.get('operator', '-')} | "
-            f"전체 보존 이력: O₃ {totals['lifetime_o3']:,} cycles · Main {totals['lifetime_main']:,} cycles"
+            f"전체 보존 이력: A step {totals['lifetime_o3']:,} · B step {totals['lifetime_main']:,}"
         )
     display = records[[column for column in ["process_date", "operator", "o3_cycles", "main_cycles", "idle_cvg", "note", "created_at"] if column in records]].copy()
     display.insert(2, "record_type", display.get("note", pd.Series("", index=display.index)).apply(lambda value: "오일 교체 · 누적 초기화" if is_oil_change_record(value) else "공정"))
     if "note" in display:
         display["note"] = display["note"].apply(clean_shared_log_note)
-    display.rename(columns={"process_date": "공정일", "operator": "작성자", "record_type": "기록 유형", "o3_cycles": "O₃ cycles", "main_cycles": "Main cycles", "idle_cvg": "Idle CVG [Torr]", "note": "메모", "created_at": "저장 시각"}, inplace=True)
+    display.rename(columns={"process_date": "공정일", "operator": "작성자", "record_type": "기록 유형", "o3_cycles": "A step", "main_cycles": "B step", "idle_cvg": "Idle CVG [Torr]", "note": "메모", "created_at": "저장 시각"}, inplace=True)
     st.dataframe(display.sort_index(ascending=False), use_container_width=True, hide_index=True)
     with st.expander("기록 수정 · 삭제", expanded=False):
         configured_password = shared_log_edit_password()
@@ -906,7 +924,7 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
         else:
             records_for_edit = records.sort_values(["process_date", "created_at"], ascending=False).copy()
             labels = {
-                int(row.id): f"#{int(row.id)} · {row.process_date} · {row.operator} · {'오일 교체' if is_oil_change_record(row.note) else '공정'} · O₃ {int(row.o3_cycles)} / Main {int(row.main_cycles)}"
+                int(row.id): f"#{int(row.id)} · {row.process_date} · {row.operator} · {'오일 교체' if is_oil_change_record(row.note) else '공정'} · A step {int(row.o3_cycles)} / B step {int(row.main_cycles)}"
                 for row in records_for_edit.itertuples()
             }
             selected_id = st.selectbox(
@@ -920,8 +938,8 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
                 edit_date = e1.date_input("공정일 수정", value=pd.to_datetime(selected_row.process_date).date())
                 edit_operator = e2.text_input("작성자 수정", value=str(selected_row.operator))
                 e3, e4, e5 = st.columns(3)
-                edit_o3 = e3.number_input("O₃ cycle 횟수 수정", min_value=0, value=int(selected_row.o3_cycles), step=1)
-                edit_main = e4.number_input("Main step 횟수 수정", min_value=0, value=int(selected_row.main_cycles), step=1)
+                edit_o3 = e3.number_input("A step 횟수 수정", min_value=0, value=int(selected_row.o3_cycles), step=1)
+                edit_main = e4.number_input("B step 횟수 수정", min_value=0, value=int(selected_row.main_cycles), step=1)
                 edit_cvg = e5.number_input("Idle CVG 수정 [Torr]", min_value=0.0, value=float(selected_row.idle_cvg), step=0.0001, format="%.5f")
                 existing_note = clean_shared_log_note(selected_row.get("note"))
                 edit_note = st.text_input("메모 수정", value=existing_note)
@@ -966,7 +984,8 @@ create policy \"lab insert\" on public.ald_run_log for insert to anon with check
                         except Exception as exc:
                             st.error(str(exc))
 
-    st.download_button("공동 로그 CSV 다운로드", records.to_csv(index=False).encode("utf-8-sig"), "ald_shared_log.csv", "text/csv")
+    download_records = prepare_shared_log_download(records)
+    st.download_button("공동 로그 CSV 다운로드", download_records.to_csv(index=False).encode("utf-8-sig"), "ald_shared_log.csv", "text/csv")
 
 
 def recipe_settings_panel(defaults: dict) -> dict:
@@ -1106,8 +1125,9 @@ create policy "pecvd lab insert" on public.pecvd_calibration
         lambda value: f"{int(value // 60)}:{int(round(value % 60)):02d}"
     )
     st.markdown("#### 320 °C · 100 nm 누적 실측 기준")
-    st.dataframe(display, hide_index=True, use_container_width=True)
-    st.download_button(
+    reference_panel = st.expander("누적 실측 데이터·그래프 보기", expanded=False)
+    reference_panel.dataframe(display, hide_index=True, use_container_width=True)
+    reference_panel.download_button(
         "PECVD 누적 실측 CSV 다운로드",
         display.to_csv(index=False).encode("utf-8-sig"),
         "pecvd_320C_calibration.csv", "text/csv",
@@ -1148,16 +1168,29 @@ create policy "pecvd lab insert" on public.pecvd_calibration
         xaxis_title="SiH₄ flow [sccm]", yaxis_title="N₂O flow [sccm]",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    reference_panel.plotly_chart(fig, use_container_width=True)
 
 def log_tab():
     st.subheader("ALD 공정 로그 자동 정리 · Step Plot")
-    files = st.file_uploader("ALD 공정 로그 TXT 업로드", type=["txt", "log"], accept_multiple_files=True)
+    files = st.file_uploader("ALD 공정 로그 TXT 업로드", type=["txt"], accept_multiple_files=True)
     defaults = {"pre_delay_s": 60.0, "pre_flow_s": 120.0, "o3_pulse_s": 50.0, "o3_purge_s": 10.0, "o3_cycles": 30, "tma_pulse_s": 0.5, "tma_purge_s": 20.0, "main_o3_pulse_s": 5.0, "main_o3_purge_s": 20.0, "main_cycles": 101, "post_flow_s": 120.0, "post_delay_s": 60.0, "baseline_window_s": 3.0, "tma_delta_limit": 0.01, "tma_search_tolerance_s": 6.0}
-    settings = recipe_settings_panel(defaults)
     if not files:
-        st.info("로그를 업로드하면 O₃/Main cycle을 자동 계산하고, TMA pulse 응답과 교체 필요 구간을 분석합니다.")
+        st.info("허용된 ALD recipe TXT 로그를 업로드하면 Recipe 시간 설정과 분석 기능이 표시됩니다.")
         return
+
+    rejected = []
+    for uploaded_file in files:
+        allowed, reason = validate_ald_log_upload(uploaded_file.getvalue(), uploaded_file.name)
+        if not allowed:
+            rejected.append({"파일": uploaded_file.name, "거부 사유": reason})
+    if rejected:
+        st.error("허용되지 않은 로그가 포함되어 업로드를 거부했습니다. 아래 파일을 제거한 뒤 다시 시도해 주세요.")
+        st.dataframe(pd.DataFrame(rejected), hide_index=True, use_container_width=True)
+        st.caption("이 분석기는 파일 내용에 `FMDL_Al2O3-O3`가 포함된 TXT 로그만 허용합니다.")
+        return
+
+    st.success("허용된 FMDL Al₂O₃-O₃ recipe 로그를 확인했습니다.")
+    settings = recipe_settings_panel(defaults)
 
     names = [file.name for file in files]
     selected = st.selectbox("화면에 표시할 로그", names)

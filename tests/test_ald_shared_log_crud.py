@@ -48,5 +48,19 @@ class SharedLogCrudTests(unittest.TestCase):
         stored = ALD.build_shared_log_note("pump oil replaced", True)
         self.assertTrue(ALD.is_oil_change_record(stored))
         self.assertEqual(ALD.clean_shared_log_note(stored), "pump oil replaced")
+    def test_shared_log_csv_uses_a_and_b_step_names(self):
+        records = pd.DataFrame([
+            {"o3_cycles": 12, "main_cycles": 34, "idle_cvg": 0.005},
+        ])
+
+        exported = ALD.prepare_shared_log_download(records)
+
+        self.assertIn("A step", exported.columns)
+        self.assertIn("B step", exported.columns)
+        self.assertNotIn("o3_cycles", exported.columns)
+        self.assertNotIn("main_cycles", exported.columns)
+        self.assertIn("o3_cycles", records.columns)
+
+
 if __name__ == "__main__":
     unittest.main()

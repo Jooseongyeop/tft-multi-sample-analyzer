@@ -72,5 +72,31 @@ class ConservativePredictionTests(unittest.TestCase):
         self.assertAlmostEqual(result["deposition_rate_nm_s"], 0.375)
         self.assertAlmostEqual(result["process_time_s"], 100 / 0.375)
         self.assertEqual(result["matching_points"], 2)
+
+    def test_accepts_txt_containing_allowed_ald_recipe_marker(self):
+        allowed, reason = ALD.validate_ald_log_upload(
+            b"Process Name : FMDL_Al2O3-O3_3600s_O3flow\n", "allowed.txt"
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "")
+
+    def test_rejects_txt_without_allowed_ald_recipe_marker(self):
+        allowed, reason = ALD.validate_ald_log_upload(
+            b"Process Name : unrelated_recipe\n", "other.txt"
+        )
+        self.assertFalse(allowed)
+        self.assertIn("FMDL_Al2O3-O3", reason)
+
+    def test_rejects_non_txt_and_empty_uploads(self):
+        allowed_log, reason_log = ALD.validate_ald_log_upload(
+            b"FMDL_Al2O3-O3", "allowed.log"
+        )
+        allowed_empty, reason_empty = ALD.validate_ald_log_upload(b"", "empty.txt")
+        self.assertFalse(allowed_log)
+        self.assertIn("TXT", reason_log)
+        self.assertFalse(allowed_empty)
+        self.assertIn("빈 파일", reason_empty)
+
+
 if __name__ == "__main__":
     unittest.main()
