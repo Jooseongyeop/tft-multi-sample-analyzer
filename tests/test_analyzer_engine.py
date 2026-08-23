@@ -1,5 +1,6 @@
 import unittest
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -116,6 +117,15 @@ class ParserTests(unittest.TestCase):
             ["sample_A"],
         )
 
+    def test_variation_panel_is_collapsed_below_transfer_plot(self):
+        source = Path(analyzer.__file__).read_text(encoding="utf-8")
+        plot_position = source.index("st.pyplot(plot_all(preview), clear_figure=True)")
+        variation_position = source.index(
+            'with st.expander("공정 산포 분석", expanded=False)'
+        )
+        processed_tab_position = source.index("with tabs[1]:")
+        self.assertLess(plot_position, variation_position)
+        self.assertLess(variation_position, processed_tab_position)
     def test_variation_analysis_flags_iqr_outlier_and_calculates_cv(self):
         summary = pd.DataFrame({
             "Sample": ["A", "B", "C", "D", "E"],
