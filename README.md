@@ -1,6 +1,6 @@
 # TFT Analyzer Suite
 
-TFT 측정 데이터와 ALD 공정 로그를 브라우저에서 분석하는 Streamlit 웹앱입니다.
+TFT 측정 데이터와 ALD/CVD 공정 데이터를 브라우저에서 분석하는 Streamlit 웹앱입니다.
 
 ## 페이지
 
@@ -11,6 +11,7 @@ TFT 측정 데이터와 ALD 공정 로그를 브라우저에서 분석하는 Str
 - 파일별 실제 VG 최소·최대 범위와 sweep reset 자동 감지 (`-2~2 V`, `-12~12 V` 등)
 - 서로 다른 VG 범위의 샘플도 Origin용 Excel에서 VG 기준 outer merge
 - 여러 시료의 Mobility, Vth, SS 동시 계산
+- Vth, FEM, Vd=0.1 V max |Ig|의 평균·표준편차·CV와 1.5×IQR 산포 이탈 소자 자동 표시
 - Transfer Curve에서 Id, Ig 및 SS fitting 구간 확인
 - Origin용 IV, IG, Mobility(FEM) Excel 생성
 
@@ -21,7 +22,7 @@ TFT 측정 데이터와 ALD 공정 로그를 브라우저에서 분석하는 Str
 - 시간별 ΔVth, Transfer Curve 및 결과 Excel 생성
 - OriginPro 2020 자동 플롯은 Windows 로컬 전용이며 공개 저장소에는 템플릿을 포함하지 않음
 
-### 3. ALD Process Log
+### 3. ALD/CVD 공정
 
 - Streamlit 비공개 설정의 오일 cycle별 열화 속도를 사용
 - 현재 idle CVG 입력으로 Q3 열화 속도를 적용한 보수적 잔여 횟수만 표시
@@ -29,6 +30,7 @@ TFT 측정 데이터와 ALD 공정 로그를 브라우저에서 분석하는 Str
 - Q1·중앙값·Q3와 cycle별 열화 속도 Box Plot 표시
 - 여러 ALD TXT/LOG 파일의 실제 BTorr 자동 추출
 - Main step와 cycle 요약, 인터랙티브 Plot 및 Excel 생성
+- 320 °C 실측 4점 기반 SiH4:N2O 비율별 PECVD 증착률 및 목표 두께 공정시간 계산
 
 ## 웹 실행
 
@@ -83,7 +85,7 @@ The ALD page now supports:
 
 ### Shared ALD process log setup
 
-The Streamlit server filesystem is temporary, so persistent multi-user records are stored outside GitHub. Create a private Supabase project, run the SQL shown in the app under **ALD Process Log > 공정 로그 시트 > 관리자 설정 방법**, then add this to Streamlit Community Cloud **App settings > Secrets**:
+The Streamlit server filesystem is temporary, so persistent multi-user records are stored outside GitHub. Create a private Supabase project, run the SQL shown in the app under **ALD/CVD 공정 > 공정 로그 시트 > 관리자 설정 방법**, then add this to Streamlit Community Cloud **App settings > Secrets**:
 
 ```toml
 [ald_shared_log]

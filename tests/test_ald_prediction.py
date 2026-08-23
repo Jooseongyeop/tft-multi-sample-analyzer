@@ -26,5 +26,17 @@ class ConservativePredictionTests(unittest.TestCase):
         self.assertEqual(result["remaining"], 0)
 
 
+    def test_pecvd_exact_recipe_and_target_thickness_scaling(self):
+        result = ALD.calculate_pecvd_process_time(20, 1000, 200)
+        self.assertAlmostEqual(result["process_time_s"], 1466.0)
+        self.assertEqual(result["method"], "실측 recipe")
+
+    def test_pecvd_interpolates_between_measured_ratios(self):
+        result = ALD.calculate_pecvd_process_time(35, 750, 100)
+        self.assertFalse(result["extrapolated"])
+        self.assertEqual(result["method"], "실측점 사이 log-ratio 보간")
+        self.assertGreater(result["deposition_rate_nm_s"], 100 / 470)
+        self.assertLess(result["deposition_rate_nm_s"], 100 / 400)
+
 if __name__ == "__main__":
     unittest.main()
