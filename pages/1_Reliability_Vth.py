@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import io
 import json
 import re
@@ -19,19 +20,39 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = BASE_DIR / "top_gate_reliability_template.opju"
 WORKER_PATH = BASE_DIR / "origin2020_worker_v5.py"
 
-# File names contain interval/measurement times. Origin displays accumulated times.
+# Older files use interval labels, while newer files use accumulated stress times.
 INITIAL_FILE_TIMES = (0.0, 1.0)
-FOLLOWUP_FILE_TIMES = [100.0, 400.0, 500.0, 800.0, 1800.0]
-FILE_TIMES = [*INITIAL_FILE_TIMES, *FOLLOWUP_FILE_TIMES]
-PLOT_TIME = {
-    0.0: 1.0,
-    1.0: 1.0,
-    100.0: 100.0,
-    400.0: 500.0,
-    500.0: 1000.0,
-    800.0: 1800.0,
-    1800.0: 3600.0,
+TIME_SCHEDULES = {
+    "interval": {
+        "followups": [100.0, 400.0, 500.0, 800.0, 1800.0],
+        "plot_time": {
+            0.0: 1.0,
+            1.0: 1.0,
+            100.0: 100.0,
+            400.0: 500.0,
+            500.0: 1000.0,
+            800.0: 1800.0,
+            1800.0: 3600.0,
+        },
+    },
+    "accumulated": {
+        "followups": [100.0, 500.0, 800.0, 1800.0, 3600.0],
+        "plot_time": {
+            0.0: 1.0,
+            1.0: 1.0,
+            100.0: 100.0,
+            500.0: 500.0,
+            800.0: 800.0,
+            1800.0: 1800.0,
+            3600.0: 3600.0,
+        },
+    },
 }
+FILE_TIMES = sorted(
+    set(INITIAL_FILE_TIMES).union(
+        *(schedule["followups"] for schedule in TIME_SCHEDULES.values())
+    )
+)
 TIME_PATTERN = re.compile(r"(?<!\d)(\d+(?:\.\d+)?)\s*s\b", re.IGNORECASE)
 TYPE_PATTERN = re.compile(
     r"(?<![A-Z])(NBTS|PBTS|NBS|PBS)(?![A-Z])", re.IGNORECASE
@@ -49,7 +70,25 @@ def read_measurement(uploaded) -> pd.DataFrame:
     last_error = None
     for encoding in ("utf-8-sig", "utf-8", "cp949", "euc-kr", "latin1"):
         try:
-            df = pd.read_csv(io.BytesIO(raw), encoding=encoding)
+            text = raw.decode(encoding)
+            rows = list(csv.reader(io.StringIO(text)))
+            header = None
+            records = []
+            for row in rows:
+                if not row:
+                    continue
+                marker = row[0].strip()
+                if marker == "DataName":
+                    header = [cell.strip() for cell in row[1:]]
+                    records = []
+                elif marker == "DataValue" and header:
+                    values = row[1 : 1 + len(header)]
+                    values += [""] * (len(header) - len(values))
+                    records.append(values)
+            if header and records:
+                return pd.DataFrame(records, columns=header)
+
+            df = pd.read_csv(io.StringIO(text), sep=None, engine="python")
             if df.shape[1] >= 2:
                 return df
         except Exception as exc:
@@ -72,12 +111,25 @@ def identify_file(filename: str) -> tuple[str, float]:
     return condition, matches[0]
 
 
-def ordered_file_times(curves: dict[float, pd.DataFrame]) -> list[float]:
-    """Use either a 0 s or 1 s file as the first reliability measurement."""
+def resolve_time_schedule(
+    curves: dict[float, pd.DataFrame],
+) -> tuple[str, list[float], dict[float, float]]:
+    """Detect legacy interval labels or accumulated stress-time labels."""
     initial = next((time for time in INITIAL_FILE_TIMES if time in curves), None)
     if initial is None:
-        raise ValueError("The first reliability file must be labeled 0 s or 1 s.")
-    return [initial, *FOLLOWUP_FILE_TIMES]
+        raise ValueError("첫 번째 파일 시간은 0 s 또는 1 s여야 합니다.")
+
+    matches = []
+    for name, schedule in TIME_SCHEDULES.items():
+        followups = schedule["followups"]
+        if all(time in curves for time in followups):
+            matches.append((name, [initial, *followups], schedule["plot_time"]))
+    if not matches:
+        expected = "1/100/400/500/800/1800 s 또는 1/100/500/800/1800/3600 s"
+        raise ValueError(f"필요한 측정 시간 구성이 아닙니다: {expected}")
+    if len(matches) > 1:
+        raise ValueError("두 시간 구성이 섞여 있습니다. 조건별로 6개 파일만 올려주세요.")
+    return matches[0]
 
 
 def pick_column(columns: Iterable[str], keywords: tuple[str, ...]) -> str | None:
@@ -117,10 +169,14 @@ def constant_current_vth(vg, current, target: float) -> float:
     )
 
 
-def build_wide(curves: dict[float, pd.DataFrame]) -> pd.DataFrame:
+def build_wide(
+    curves: dict[float, pd.DataFrame],
+    ordered_times: list[float],
+    plot_time: dict[float, float],
+) -> pd.DataFrame:
     wide = None
-    for file_time in ordered_file_times(curves):
-        accumulated = int(PLOT_TIME[file_time])
+    for file_time in ordered_times:
+        accumulated = int(plot_time[file_time])
         part = curves[file_time][["Vg", "Id"]].copy()
         part = part.apply(pd.to_numeric, errors="coerce").dropna(subset=["Vg"])
         part = part.drop_duplicates("Vg", keep="first")
@@ -193,8 +249,8 @@ def run_origin(
 
 st.title("TFT 신뢰성 Vth + OriginPro 2020 자동 플롯 v5")
 st.caption(
-    "NBTS/NBS 및 PBTS/PBS 동시 분석 · 파일 측정시간을 누적시간 "
-    "1/100/500/1000/1800/3600 s로 변환"
+    "NBTS/NBS 및 PBTS/PBS 동시 분석 · B1500 원본과 일반 표 형식 지원 · "
+    "측정 시간 구성 자동 인식"
 )
 
 with st.sidebar:
@@ -208,8 +264,9 @@ with st.sidebar:
         format="%.2e",
     )
     st.markdown(
-        "**시간 변환**  \n"
-        "0→1, 100→100, 400→500, 500→1000, 800→1800, 1800→3600 s"
+        "**지원 시간 구성**  \n"
+        "기존: 1/100/400/500/800/1800 s  \n"
+        "누적: 1/100/500/800/1800/3600 s"
     )
 
 if "reliability_upload_version" not in st.session_state:
@@ -255,7 +312,6 @@ for uploaded in files:
             {
                 "Condition": condition,
                 "File Time (s)": file_time,
-                "Accumulated Time (s)": PLOT_TIME[file_time],
                 "Vth (V)": constant_current_vth(vg, drain, target_current),
                 "File": uploaded.name,
             }
@@ -266,39 +322,41 @@ for error in errors:
     st.warning(error)
 
 complete_conditions = []
+condition_schedules = {}
 for condition in ("NBTS", "PBTS"):
     if not curves[condition]:
         continue
-    missing = [t for t in FOLLOWUP_FILE_TIMES if t not in curves[condition]]
-    if not any(t in curves[condition] for t in INITIAL_FILE_TIMES):
-        missing.insert(0, "0 s or 1")
-    if missing:
-        st.warning(
-            f"{condition} 누락 파일 시간: "
-            + ", ".join(
-                f"{time:g} s" if isinstance(time, (int, float)) else f"{time} s"
-                for time in missing
-            )
-        )
-    else:
+    try:
+        condition_schedules[condition] = resolve_time_schedule(curves[condition])
         complete_conditions.append(condition)
+    except ValueError as exc:
+        st.warning(f"{condition}: {exc}")
 if not complete_conditions:
     st.error("NBTS/NBS 또는 PBTS/PBS 중 한 조건의 파일 6개가 모두 필요합니다.")
     st.stop()
 
 all_results, wides, tables = [], {}, {}
 for condition in complete_conditions:
+    schedule_name, ordered_times, plot_time = condition_schedules[condition]
     result = (
-        pd.DataFrame([row for row in records if row["Condition"] == condition])
+        pd.DataFrame(
+            [
+                row
+                for row in records
+                if row["Condition"] == condition
+                and row["File Time (s)"] in ordered_times
+            ]
+        )
         .drop_duplicates("File Time (s)", keep="last")
-        .sort_values("Accumulated Time (s)")
-        .reset_index(drop=True)
     )
+    result["Accumulated Time (s)"] = result["File Time (s)"].map(plot_time)
+    result["Time Format"] = schedule_name
+    result = result.sort_values("Accumulated Time (s)").reset_index(drop=True)
     baseline = float(
         result.loc[np.isclose(result["Accumulated Time (s)"], 1), "Vth (V)"].iloc[0]
     )
     result["Delta Vth vs 1 s (V)"] = result["Vth (V)"] - baseline
-    wide = build_wide(curves[condition])
+    wide = build_wide(curves[condition], ordered_times, plot_time)
     all_results.append(result)
     wides[condition] = wide
     tables[condition] = origin_table(wide, result)
@@ -313,14 +371,15 @@ for tab, condition in zip(tabs, complete_conditions):
         st.dataframe(wides[condition], use_container_width=True, height=300)
         left, right = st.columns(2)
         result = next(df for df in all_results if df.iloc[0]["Condition"] == condition)
+        _, ordered_times, plot_time = condition_schedules[condition]
         with left:
             fig, ax = plt.subplots(figsize=(7, 5))
-            for file_time in ordered_file_times(curves[condition]):
+            for file_time in ordered_times:
                 data = curves[condition][file_time].dropna().sort_values("Vg")
                 ax.plot(
                     data["Vg"],
                     np.abs(data["Id"]),
-                    label=f"{int(PLOT_TIME[file_time])} s",
+                    label=f"{int(plot_time[file_time])} s",
                 )
             ax.axhline(target_current, color="gray", linestyle="--")
             ax.set_yscale("log")
