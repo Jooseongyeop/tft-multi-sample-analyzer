@@ -33,7 +33,15 @@ PLOT_TIME = {
     1800.0: 3600.0,
 }
 TIME_PATTERN = re.compile(r"(?<!\d)(\d+(?:\.\d+)?)\s*s\b", re.IGNORECASE)
-TYPE_PATTERN = re.compile(r"(?<![A-Z])(NBTS|PBTS)(?![A-Z])", re.IGNORECASE)
+TYPE_PATTERN = re.compile(
+    r"(?<![A-Z])(NBTS|PBTS|NBS|PBS)(?![A-Z])", re.IGNORECASE
+)
+CONDITION_ALIASES = {
+    "NBTS": "NBTS",
+    "NBS": "NBTS",
+    "PBTS": "PBTS",
+    "PBS": "PBTS",
+}
 
 
 def read_measurement(uploaded) -> pd.DataFrame:
@@ -52,7 +60,7 @@ def read_measurement(uploaded) -> pd.DataFrame:
 def identify_file(filename: str) -> tuple[str, float]:
     type_match = TYPE_PATTERN.search(filename)
     if not type_match:
-        raise ValueError("파일명에서 NBTS/PBTS를 찾지 못했습니다.")
+        raise ValueError("파일명에서 NBTS/NBS 또는 PBTS/PBS를 찾지 못했습니다.")
     time_match = TIME_PATTERN.search(filename)
     if not time_match:
         raise ValueError("파일명에서 측정 시간(예: 400.00s)을 찾지 못했습니다.")
@@ -60,7 +68,8 @@ def identify_file(filename: str) -> tuple[str, float]:
     matches = [t for t in FILE_TIMES if np.isclose(measured, t)]
     if not matches:
         raise ValueError(f"지원하지 않는 측정 시간입니다: {measured:g} s")
-    return type_match.group(1).upper(), matches[0]
+    condition = CONDITION_ALIASES[type_match.group(1).upper()]
+    return condition, matches[0]
 
 
 def ordered_file_times(curves: dict[float, pd.DataFrame]) -> list[float]:
@@ -184,7 +193,7 @@ def run_origin(
 
 st.title("TFT 신뢰성 Vth + OriginPro 2020 자동 플롯 v5")
 st.caption(
-    "NBTS/PBTS 동시 분석 · 파일 측정시간을 누적시간 "
+    "NBTS/NBS 및 PBTS/PBS 동시 분석 · 파일 측정시간을 누적시간 "
     "1/100/500/1000/1800/3600 s로 변환"
 )
 
@@ -208,7 +217,7 @@ if "reliability_upload_version" not in st.session_state:
 upload_column, clear_column = st.columns([5, 1])
 with upload_column:
     files = st.file_uploader(
-        "NBTS/PBTS reliability files (6 per condition, up to 12 files)",
+        "NBTS/NBS or PBTS/PBS reliability files (6 per condition, up to 12 files)",
         accept_multiple_files=True,
         key=f"reliability_upload_{st.session_state.reliability_upload_version}",
     )
@@ -224,7 +233,9 @@ with clear_column:
         st.session_state.reliability_upload_version += 1
         st.rerun()
 if not files:
-    st.info("파일명에 NBTS 또는 PBTS와 0.00s 같은 측정 시간이 필요합니다.")
+    st.info(
+        "파일명에 NBTS/NBS 또는 PBTS/PBS와 0.00s 같은 측정 시간이 필요합니다."
+    )
     st.stop()
 
 curves: dict[str, dict[float, pd.DataFrame]] = {"NBTS": {}, "PBTS": {}}
@@ -272,7 +283,7 @@ for condition in ("NBTS", "PBTS"):
     else:
         complete_conditions.append(condition)
 if not complete_conditions:
-    st.error("NBTS 또는 PBTS 중 한 조건의 파일 6개가 모두 필요합니다.")
+    st.error("NBTS/NBS 또는 PBTS/PBS 중 한 조건의 파일 6개가 모두 필요합니다.")
     st.stop()
 
 all_results, wides, tables = [], {}, {}
