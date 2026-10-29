@@ -547,31 +547,67 @@ def main(configure_page=True):
 
     if "tft_upload_version" not in st.session_state:
         st.session_state.tft_upload_version = 0
+    if "tft_file_group_count" not in st.session_state:
+        st.session_state.tft_file_group_count = 1
     upload_column, clear_column = st.columns([5, 1])
     with upload_column:
         file_tab, folder_tab = st.tabs(["Select files", "Select folders"])
         with file_tab:
-            selected_files = st.file_uploader(
-                "Upload multiple CSV or Excel raw-data files",
-                type=["csv", "txt", "xlsx", "xls"],
-                accept_multiple_files=True,
-                key=f"tft_raw_files_{st.session_state.tft_upload_version}",
+            st.caption(
+                "첫 번째 폴더에서 파일을 선택한 뒤 `Add another folder`를 눌러 "
+                "다른 폴더용 업로드 칸을 추가하세요. 기존 선택은 유지됩니다."
             )
+            selected_file_groups = []
+            for group_index in range(st.session_state.tft_file_group_count):
+                selected_file_groups.append(
+                    st.file_uploader(
+                        f"Folder / file group {group_index + 1}",
+                        type=["csv", "txt", "xlsx", "xls"],
+                        accept_multiple_files=True,
+                        key=(
+                            f"tft_raw_files_{st.session_state.tft_upload_version}_"
+                            f"{group_index}"
+                        ),
+                    )
+                )
+            add_column, remove_column, _ = st.columns([1, 1, 3])
+            with add_column:
+                if st.button(
+                    "Add another folder",
+                    key=f"add_tft_file_group_{st.session_state.tft_upload_version}",
+                    use_container_width=True,
+                ):
+                    st.session_state.tft_file_group_count += 1
+                    st.rerun()
+            with remove_column:
+                if st.button(
+                    "Remove last group",
+                    key=f"remove_tft_file_group_{st.session_state.tft_upload_version}",
+                    disabled=st.session_state.tft_file_group_count <= 1,
+                    use_container_width=True,
+                ):
+                    st.session_state.tft_file_group_count -= 1
+                    st.rerun()
         with folder_tab:
             selected_folder_files = st.file_uploader(
-                "Upload one or more raw-data folders",
+                "Upload a complete raw-data folder",
                 type=["csv", "txt", "xlsx", "xls"],
                 accept_multiple_files="directory",
                 key=f"tft_raw_folders_{st.session_state.tft_upload_version}",
                 help=(
-                    "Select a folder, then use the uploader again to add another folder. "
-                    "Files from all selected folders and subfolders are analyzed together."
+                    "All supported files in the selected folder and its subfolders are uploaded."
                 ),
             )
             st.caption(
-                "폴더를 선택한 뒤 업로드 버튼을 다시 누르면 다른 폴더를 계속 추가할 수 있습니다."
+                "폴더 전체를 선택할 때 사용합니다. 여러 폴더에서 일부 파일만 고르려면 "
+                "`Select files`의 `Add another folder`를 사용하세요."
             )
-        uploaded = combine_upload_groups(selected_files, selected_folder_files)
+        uploaded = combine_upload_groups(*selected_file_groups, selected_folder_files)
+        upload_sources = [
+            f"File group {group_index + 1}"
+            for group_index, group in enumerate(selected_file_groups)
+            for _ in (group or [])
+        ] + [upload_source(file.name) for file in (selected_folder_files or [])]
     with clear_column:
         st.write("")
         st.write("")
@@ -579,6 +615,7 @@ def main(configure_page=True):
             "Clear all files", disabled=not bool(uploaded), use_container_width=True
         ):
             st.session_state.tft_upload_version += 1
+            st.session_state.tft_file_group_count = 1
             st.rerun()
     if not uploaded:
         st.info("Select files to begin analysis.")
@@ -591,7 +628,7 @@ def main(configure_page=True):
             {
                 "Order": range(1, len(uploaded) + 1),
                 "Sample": names,
-                "Source folder": [upload_source(f.name) for f in uploaded],
+                "Upload source": upload_sources,
                 "Filename": [f.name for f in uploaded],
             }
         ),
