@@ -36,7 +36,7 @@ class MultiFolderUploadTests(unittest.TestCase):
         a = SimpleNamespace(name="individual.csv")
         b = SimpleNamespace(name="folder_A/sample.csv")
         c = SimpleNamespace(name="folder_B/sample.csv")
-        combined = HELPERS["combine_upload_groups"]([a], [b, c])
+        combined = HELPERS["combine_upload_groups"]([a], [b], [c])
         self.assertEqual(combined, [a, b, c])
 
     def test_preserves_folder_source_and_unique_sample_names(self):
