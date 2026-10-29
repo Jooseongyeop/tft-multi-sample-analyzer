@@ -51,6 +51,19 @@ def unique_names(files):
     return names
 
 
+def combine_upload_groups(*groups):
+    """Combine individual-file and directory uploads in their displayed order."""
+    return [uploaded for group in groups for uploaded in (group or [])]
+
+
+def upload_source(filename):
+    """Return the selected directory path, or a label for individually selected files."""
+    normalized = str(filename).replace("\\", "/")
+    if "/" not in normalized:
+        return "Individual file"
+    return normalized.rsplit("/", 1)[0]
+
+
 def decode_text(raw):
     for encoding in ("utf-8-sig", "utf-8", "cp949", "euc-kr", "latin1"):
         try:
@@ -536,12 +549,29 @@ def main(configure_page=True):
         st.session_state.tft_upload_version = 0
     upload_column, clear_column = st.columns([5, 1])
     with upload_column:
-        uploaded = st.file_uploader(
-            "Upload multiple CSV or Excel raw-data files",
-            type=["csv", "txt", "xlsx", "xls"],
-            accept_multiple_files=True,
-            key=f"tft_raw_upload_{st.session_state.tft_upload_version}",
-        )
+        file_tab, folder_tab = st.tabs(["Select files", "Select folders"])
+        with file_tab:
+            selected_files = st.file_uploader(
+                "Upload multiple CSV or Excel raw-data files",
+                type=["csv", "txt", "xlsx", "xls"],
+                accept_multiple_files=True,
+                key=f"tft_raw_files_{st.session_state.tft_upload_version}",
+            )
+        with folder_tab:
+            selected_folder_files = st.file_uploader(
+                "Upload one or more raw-data folders",
+                type=["csv", "txt", "xlsx", "xls"],
+                accept_multiple_files="directory",
+                key=f"tft_raw_folders_{st.session_state.tft_upload_version}",
+                help=(
+                    "Select a folder, then use the uploader again to add another folder. "
+                    "Files from all selected folders and subfolders are analyzed together."
+                ),
+            )
+            st.caption(
+                "폴더를 선택한 뒤 업로드 버튼을 다시 누르면 다른 폴더를 계속 추가할 수 있습니다."
+            )
+        uploaded = combine_upload_groups(selected_files, selected_folder_files)
     with clear_column:
         st.write("")
         st.write("")
@@ -557,7 +587,14 @@ def main(configure_page=True):
     names = unique_names(uploaded)
     st.subheader("Uploaded files")
     st.dataframe(
-        pd.DataFrame({"Order": range(1, len(uploaded) + 1), "Sample": names, "Filename": [f.name for f in uploaded]}),
+        pd.DataFrame(
+            {
+                "Order": range(1, len(uploaded) + 1),
+                "Sample": names,
+                "Source folder": [upload_source(f.name) for f in uploaded],
+                "Filename": [f.name for f in uploaded],
+            }
+        ),
         hide_index=True,
         use_container_width=True,
     )

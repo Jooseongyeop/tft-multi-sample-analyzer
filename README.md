@@ -11,6 +11,7 @@ TFT 측정 데이터와 ALD/CVD 공정 데이터를 브라우저에서 분석하
 - 파일별 실제 VG 최소·최대 범위와 sweep reset 자동 감지 (`-2~2 V`, `-12~12 V` 등)
 - 서로 다른 VG 범위의 샘플도 Origin용 Excel에서 VG 기준 outer merge
 - 여러 시료의 Mobility, Vth, SS 동시 계산
+- 개별 파일 선택과 여러 폴더의 누적 업로드를 함께 지원하며 모든 파일을 하나의 분석 목록으로 통합
 - Vth, FEM, Vd=0.1 V max |Ig|의 평균·표준편차·CV와 1.5×IQR 산포 이탈 소자 자동 표시
 - Transfer Curve에서 Id, Ig 및 SS fitting 구간 확인
 - Origin용 IV, IG, Mobility(FEM) Excel 생성
