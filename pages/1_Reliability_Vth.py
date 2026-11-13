@@ -47,6 +47,18 @@ TIME_SCHEDULES = {
             3600.0: 3600.0,
         },
     },
+    "accumulated_1000": {
+        "followups": [100.0, 500.0, 1000.0, 1800.0, 3600.0],
+        "plot_time": {
+            0.0: 1.0,
+            1.0: 1.0,
+            100.0: 100.0,
+            500.0: 500.0,
+            1000.0: 1000.0,
+            1800.0: 1800.0,
+            3600.0: 3600.0,
+        },
+    },
 }
 FILE_TIMES = sorted(
     set(INITIAL_FILE_TIMES).union(
@@ -125,7 +137,11 @@ def resolve_time_schedule(
         if all(time in curves for time in followups):
             matches.append((name, [initial, *followups], schedule["plot_time"]))
     if not matches:
-        expected = "1/100/400/500/800/1800 s 또는 1/100/500/800/1800/3600 s"
+        expected = (
+            "1/100/400/500/800/1800 s, "
+            "1/100/500/800/1800/3600 s 또는 "
+            "1/100/500/1000/1800/3600 s"
+        )
         raise ValueError(f"필요한 측정 시간 구성이 아닙니다: {expected}")
     if len(matches) > 1:
         raise ValueError("두 시간 구성이 섞여 있습니다. 조건별로 6개 파일만 올려주세요.")
@@ -266,7 +282,8 @@ with st.sidebar:
     st.markdown(
         "**지원 시간 구성**  \n"
         "기존: 1/100/400/500/800/1800 s  \n"
-        "누적: 1/100/500/800/1800/3600 s"
+        "누적: 1/100/500/800/1800/3600 s  \n"
+        "누적(1000 s): 1/100/500/1000/1800/3600 s"
     )
 
 if "reliability_upload_version" not in st.session_state:

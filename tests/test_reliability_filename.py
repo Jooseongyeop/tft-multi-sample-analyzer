@@ -77,6 +77,9 @@ class ReliabilityFilenameTests(unittest.TestCase):
     def test_accepts_accumulated_3600_second_file(self):
         self.assertEqual(identify_file("sample_NBS_3600s.csv"), ("NBTS", 3600.0))
 
+    def test_accepts_accumulated_1000_second_file(self):
+        self.assertEqual(identify_file("sample_NBTS_1000s.csv"), ("NBTS", 1000.0))
+
     def test_does_not_match_condition_inside_another_word(self):
         with self.assertRaisesRegex(ValueError, "NBTS/NBS"):
             identify_file("sample_ANBSX_100s.csv")
@@ -107,6 +110,13 @@ class ReliabilityFilenameTests(unittest.TestCase):
         self.assertEqual(name, "interval")
         self.assertEqual(ordered, [1.0, 100.0, 400.0, 500.0, 800.0, 1800.0])
         self.assertEqual(plot_time[500.0], 1000.0)
+
+    def test_detects_accumulated_1000_second_schedule(self):
+        curves = {time: pd.DataFrame() for time in (1, 100, 500, 1000, 1800, 3600)}
+        name, ordered, plot_time = resolve_time_schedule(curves)
+        self.assertEqual(name, "accumulated_1000")
+        self.assertEqual(ordered, [1.0, 100.0, 500.0, 1000.0, 1800.0, 3600.0])
+        self.assertEqual(plot_time[1000.0], 1000.0)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ TFT 측정 데이터와 ALD/CVD 공정 데이터를 브라우저에서 분석하
 ### 2. Reliability Vth
 
 - NBTS/PBTS 파일 동시 분석
+- `1/100/500/1000/1800/3600 s`를 포함한 실험별 측정 시간 구성 자동 인식
 - 기본 `|Id| = 1.2×10⁻⁷ A` 기준 Vth 계산
 - 시간별 ΔVth, Transfer Curve 및 결과 Excel 생성
 - OriginPro 2020 자동 플롯은 Windows 로컬 전용이며 공개 저장소에는 템플릿을 포함하지 않음
