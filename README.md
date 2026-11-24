@@ -14,7 +14,7 @@ TFT 측정 데이터와 ALD/CVD 공정 데이터를 브라우저에서 분석하
 - 독립된 파일 업로드 그룹을 추가해 서로 다른 여러 폴더의 선택을 유지하고, 폴더 전체 업로드와 함께 하나의 분석 목록으로 통합
 - Vth, FEM, Vd=0.1 V max |Ig|의 평균·표준편차·CV와 1.5×IQR 산포 이탈 소자 자동 표시
 - Transfer Curve에서 Id, Ig 및 SS fitting 구간 확인
-- Origin용 IV, IG, Mobility(FEM) Excel 생성
+- Origin용 IV(`|Id|`), IG(`|Ig|`), Mobility(FEM) Excel 생성
 
 ### 2. Reliability Vth
 

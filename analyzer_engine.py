@@ -444,10 +444,15 @@ def analyze_curve(curve, settings, vds=0.1):
     return data, metrics
 
 
-def merge_origin_columns(items, value_column, first_name="Vg"):
+def merge_origin_columns(items, value_column, first_name="Vg", absolute=False):
     merged = None
     for label, frame in items:
-        part = frame[["Vg", value_column]].copy().rename(columns={value_column: label})
+        part = frame[["Vg", value_column]].copy()
+        if absolute:
+            part[value_column] = pd.to_numeric(
+                part[value_column], errors="coerce"
+            ).abs()
+        part = part.rename(columns={value_column: label})
         part = part.drop_duplicates("Vg", keep="first")
         merged = part if merged is None else pd.merge(merged, part, on="Vg", how="outer")
     if merged is None:
@@ -474,7 +479,9 @@ def workbook_bytes(
                 cell.font = Font(name="Arial", size=12, bold=row_index == 1)
         for index, (name, frame) in enumerate(processed, start=1):
             frame.to_excel(writer, sheet_name=safe_sheet_name(index, name), index=False)
-        merge_origin_columns(iv_items, "Id").to_excel(writer, sheet_name="IV", index=False)
+        merge_origin_columns(iv_items, "Id", absolute=True).to_excel(
+            writer, sheet_name="IV", index=False
+        )
         merge_origin_columns(ig_items, "Ig").to_excel(writer, sheet_name="IG", index=False)
         merge_origin_columns(mobility_items, "Mobility_cm2_Vs").to_excel(
             writer, sheet_name="Mobility(FEM)", index=False
@@ -730,7 +737,7 @@ def main(configure_page=True):
         with tabs[2]:
             sheet = st.selectbox("Sheet", ["IV", "IG", "Mobility(FEM)"])
             if sheet == "IV":
-                view = merge_origin_columns(iv_items, "Id")
+                view = merge_origin_columns(iv_items, "Id", absolute=True)
             elif sheet == "IG":
                 view = merge_origin_columns(ig_items, "Ig")
             else:

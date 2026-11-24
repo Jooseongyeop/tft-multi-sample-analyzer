@@ -48,6 +48,26 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(merged.Vg.tolist(), [-12.0, -2.0, 0.0, 2.0, 12.0])
         self.assertTrue(pd.isna(merged.loc[merged.Vg == -12.0, "narrow"]).all())
 
+    def test_origin_iv_current_is_converted_to_absolute_value(self):
+        curve = pd.DataFrame({
+            "Vg": [-1.0, 0.0, 1.0],
+            "Id": [-1e-12, 2e-9, -3e-6],
+        })
+        merged = analyzer.merge_origin_columns(
+            [("sample_Vd=0.1V", curve)], "Id", absolute=True
+        )
+        self.assertEqual(
+            merged["sample_Vd=0.1V"].tolist(),
+            [1e-12, 2e-9, 3e-6],
+        )
+
+        content = analyzer.workbook_bytes(
+            pd.DataFrame(), [], [("sample_Vd=0.1V", curve)], [], [], []
+        )
+        workbook = load_workbook(BytesIO(content), data_only=True)
+        sheet = workbook["IV"]
+        self.assertEqual([sheet.cell(row, 2).value for row in range(2, 5)], [1e-12, 2e-9, 3e-6])
+
     def test_gate_current_is_converted_to_absolute_value(self):
         frame = pd.DataFrame({
             "VG": [-1, 0, 1],
